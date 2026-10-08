@@ -29,21 +29,21 @@ var _ adapter.PlatformInterface = (*platformInterfaceWrapper)(nil)
 var _ adapter.PlatformInterfaceBinder = (*platformInterfaceWrapper)(nil)
 
 type platformInterfaceWrapper struct {
-	iif                    PlatformInterface
-	useProcFS              bool
-	networkManager         adapter.NetworkManager
-	powerManager           *powerreport.Manager
-	myTunName              string
-	myTunAddress           []netip.Addr
-	defaultInterfaceAccess sync.Mutex
-	defaultInterface       *control.Interface
-	isExpensive            bool
-	isConstrained          bool
+	iif           PlatformInterface
+	useProcFS     bool
+	powerManager  *powerreport.Manager
+	myTunName     string
+	myTunAddress  []netip.Addr
+	monitorAccess sync.Mutex
+	activeMonitor *platformDefaultInterfaceMonitor
 }
 
 func (w *platformInterfaceWrapper) Initialize(networkManager adapter.NetworkManager) error {
-	w.networkManager = networkManager
-	return nil
+	monitor, ok := networkManager.InterfaceMonitor().(*platformDefaultInterfaceMonitor)
+	if !ok || monitor == nil || monitor.platform != w {
+		return E.New("platform: network manager has a different interface monitor")
+	}
+	return monitor.bind(networkManager)
 }
 
 func (w *platformInterfaceWrapper) UsePlatformAutoDetectInterfaceControl() bool {
@@ -118,8 +118,9 @@ func (w *platformInterfaceWrapper) UsePlatformDefaultInterfaceMonitor() bool {
 
 func (w *platformInterfaceWrapper) CreateDefaultInterfaceMonitor(logger logger.Logger) tun.DefaultInterfaceMonitor {
 	return &platformDefaultInterfaceMonitor{
-		platformInterfaceWrapper: w,
-		logger:                   logger,
+		platform: w,
+		logger:   logger,
+		identity: newInterfaceUpdateListenerIdentity(),
 	}
 }
 
@@ -132,14 +133,13 @@ func (w *platformInterfaceWrapper) NetworkInterfaces() ([]adapter.NetworkInterfa
 	if err != nil {
 		return nil, err
 	}
+	defaultInterface, isExpensive, isConstrained := w.monitorSnapshot()
 	var interfaces []adapter.NetworkInterface
 	for _, netInterface := range iteratorToArray[*NetworkInterface](interfaceIterator) {
-		w.defaultInterfaceAccess.Lock()
 		// (GOOS=windows) SA4006: this value of `isDefault` is never used
 		// Why not used?
 		//nolint:staticcheck
-		isDefault := netInterface.Name != w.myTunName && w.defaultInterface != nil && int(netInterface.Index) == w.defaultInterface.Index
-		w.defaultInterfaceAccess.Unlock()
+		isDefault := netInterface.Name != w.myTunName && defaultInterface != nil && int(netInterface.Index) == defaultInterface.Index
 		interfaces = append(interfaces, adapter.NetworkInterface{
 			Interface: control.Interface{
 				Index:     int(netInterface.Index),
@@ -155,8 +155,8 @@ func (w *platformInterfaceWrapper) NetworkInterfaces() ([]adapter.NetworkInterfa
 				gateway, _ := netip.ParseAddr(it)
 				return gateway.Unmap().WithZone("")
 			}), netip.Addr.IsValid),
-			Expensive:   netInterface.Metered || isDefault && w.isExpensive,
-			Constrained: isDefault && w.isConstrained,
+			Expensive:   netInterface.Metered || isDefault && isExpensive,
+			Constrained: isDefault && isConstrained,
 		})
 	}
 	interfaces = common.UniqBy(interfaces, func(it adapter.NetworkInterface) string {
