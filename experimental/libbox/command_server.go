@@ -29,6 +29,7 @@ import (
 )
 
 type CommandServer struct {
+	transient bool
 	*daemon.StartedService
 	ctx               context.Context
 	managedService    *daemon.ManagedService
@@ -52,6 +53,17 @@ type CommandServerHandler interface {
 }
 
 func NewCommandServer(handler CommandServerHandler, platformInterface PlatformInterface) (*CommandServer, error) {
+	return newCommandServer(handler, platformInterface, false)
+}
+
+// NewTransientCommandServer creates an independent service host without a command
+// listener or shared configuration, OOM, and power-report diagnostics.
+// StartOrReloadService starts its service; call CloseService before Close.
+func NewTransientCommandServer(handler CommandServerHandler, platformInterface PlatformInterface) (*CommandServer, error) {
+	return newCommandServer(handler, platformInterface, true)
+}
+
+func newCommandServer(handler CommandServerHandler, platformInterface PlatformInterface, transient bool) (*CommandServer, error) {
 	ctx := baseContext(platformInterface)
 	powerManager := powerreport.NewManager()
 	service.MustRegister[*powerreport.Manager](ctx, powerManager)
@@ -62,6 +74,7 @@ func NewCommandServer(handler CommandServerHandler, platformInterface PlatformIn
 	}
 	service.MustRegister[adapter.PlatformInterface](ctx, platformWrapper)
 	server := &CommandServer{
+		transient:         transient,
 		ctx:               ctx,
 		handler:           handler,
 		platformInterface: platformInterface,
@@ -72,6 +85,7 @@ func NewCommandServer(handler CommandServerHandler, platformInterface PlatformIn
 		Context: ctx,
 		// Platform:         platformWrapper,
 		Handler:           (*platformHandler)(server),
+		KeepDefaultLogger: transient,
 		Debug:             sDebug,
 		LogMaxLines:       sLogMaxLines,
 		OOMKillerEnabled:  sOOMKillerEnabled,
@@ -83,16 +97,18 @@ func NewCommandServer(handler CommandServerHandler, platformInterface PlatformIn
 		// GroupID:          sGroupID,
 		// SystemProxyEnabled: false,
 	})
-	oomRecorder := oomkiller.NewRecorder(OOMRecorderOptions(server.StartedService))
-	service.MustRegister[*oomkiller.Recorder](ctx, oomRecorder)
-	oomRecorder.Start()
-	server.oomRecorder = oomRecorder
+	if !transient {
+		oomRecorder := oomkiller.NewRecorder(OOMRecorderOptions(server.StartedService))
+		service.MustRegister[*oomkiller.Recorder](ctx, oomRecorder)
+		oomRecorder.Start()
+		server.oomRecorder = oomRecorder
+	}
 	server.managedService = daemon.NewManagedService(daemon.ManagedServiceOptions{
 		Handler:     (*platformHandler)(server),
 		Debug:       sDebug,
-		OOMRecorder: oomRecorder,
+		OOMRecorder: server.oomRecorder,
 	})
-	if sPowerReportEnabled {
+	if !transient && sPowerReportEnabled {
 		err := powerManager.Start(PowerReportOptions(server.StartedService))
 		if err != nil {
 			log.StdLogger().Error(E.Cause(err, "start power report recorder"))
@@ -138,6 +154,9 @@ func streamAuthInterceptor(srv any, ss grpc.ServerStream, info *grpc.StreamServe
 }
 
 func (s *CommandServer) Start() error {
+	if s.transient {
+		return E.New("transient command server cannot start a command listener")
+	}
 	var (
 		listener net.Listener
 		err      error
@@ -197,7 +216,9 @@ func (s *CommandServer) Close() {
 	}
 	common.Close(s.listener)
 	s.StartedService.Close()
-	s.oomRecorder.Close()
+	if s.oomRecorder != nil {
+		s.oomRecorder.Close()
+	}
 	s.powerManager.Close()
 }
 
@@ -208,9 +229,11 @@ type OverrideOptions struct {
 }
 
 func (s *CommandServer) StartOrReloadService(configContent string, options *OverrideOptions) error {
-	saveConfigSnapshot(configContent)
-	if s.powerManager.Recorder() != nil {
-		copyConfigSnapshot(filepath.Join(sWorkingPath, powerreport.DraftDirectoryName))
+	if !s.transient {
+		saveConfigSnapshot(configContent)
+		if s.powerManager.Recorder() != nil {
+			copyConfigSnapshot(filepath.Join(sWorkingPath, powerreport.DraftDirectoryName))
+		}
 	}
 	err := s.StartedService.StartOrReloadService(s.ctx, configContent, &daemon.OverrideOptions{
 		AutoRedirect:   options.AutoRedirect,
