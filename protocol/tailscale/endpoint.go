@@ -83,6 +83,7 @@ type Endpoint struct {
 	network           adapter.NetworkManager
 	platformInterface adapter.PlatformInterface
 	detour            string
+	stateStore        *guardedStateStore
 	server            *tsnet.Server
 	stack             *tun.Go
 	returnAccess      sync.Mutex
@@ -236,7 +237,13 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 		keyAuth:                    options.AuthKey != "",
 		onDemand:                   options.OnDemand,
 	}
+	tailscaleEndpoint.stateStore = makeStateStore(ctx, tag, stateDirectory)
+	tailscaleEndpoint.server.Store = tailscaleEndpoint.stateStore
 	tailscaleEndpoint.server.NetstackHandler = tailscaleEndpoint
+	err = adapter.DeferConstructionCleanup(ctx, tailscaleEndpoint.retireStateStore)
+	if err != nil {
+		return nil, err
+	}
 	return tailscaleEndpoint, nil
 }
 
@@ -248,6 +255,9 @@ func (t *Endpoint) References() []string {
 }
 
 func (t *Endpoint) Start(stage adapter.StartStage, scope *adapter.Scope) error {
+	if t.stateStore != nil && t.stateStore.isSealed() {
+		return os.ErrClosed
+	}
 	switch stage {
 	case adapter.StartStateInitialize:
 		t.server.NetstackMemoryPressure = oomkiller.MemoryPressure(t.ctx)
