@@ -33,3 +33,9 @@ func TestTailscaleStoreNativeExportIsReadOnlyWithoutInstance(t *testing.T) {
 		t.Fatal("export started native service")
 	}
 }
+
+// The validation extension has one exact, no-argument gomobile getter.
+var _ interface{ GetTailscaleStoreRetirement() string } = (*ConfigValidationResult)(nil)
+
+// Membership is a separate read-only getter on that same validation result.
+var _ interface{ GetTailscaleStoreMembership() string } = (*ConfigValidationResult)(nil)
