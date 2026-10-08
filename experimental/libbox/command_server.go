@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,15 +32,22 @@ import (
 type CommandServer struct {
 	transient bool
 	*daemon.StartedService
-	ctx               context.Context
-	managedService    *daemon.ManagedService
-	handler           CommandServerHandler
-	platformInterface PlatformInterface
-	platformWrapper   *platformInterfaceWrapper
-	powerManager      *powerreport.Manager
-	oomRecorder       *oomkiller.Recorder
-	grpcServer        *grpc.Server
-	listener          net.Listener
+	ctx                  context.Context
+	managedService       *daemon.ManagedService
+	handler              CommandServerHandler
+	platformInterface    PlatformInterface
+	platformWrapper      *platformInterfaceWrapper
+	powerManager         *powerreport.Manager
+	oomRecorder          *oomkiller.Recorder
+	grpcServer           *grpc.Server
+	listener             net.Listener
+	commandAccess        sync.Mutex
+	commandStartDone     chan struct{}
+	commandCloseOnce     sync.Once
+	commandCloseDone     chan struct{}
+	commandClosing       chan struct{}
+	commandIsClosing     bool
+	beforeCommandPublish func() // deterministic lifecycle test seam; nil in production
 }
 
 type CommandServerHandler interface {
@@ -53,17 +61,24 @@ type CommandServerHandler interface {
 }
 
 func NewCommandServer(handler CommandServerHandler, platformInterface PlatformInterface) (*CommandServer, error) {
-	return newCommandServer(handler, platformInterface, false)
+	return newCommandServer(handler, platformInterface, false, false)
+}
+
+// NewStrictCommandServer has the normal primary service's listener and
+// diagnostics, but returns a real close acknowledgement for endpoint identity
+// ownership. Reload stays available until the final CloseService request.
+func NewStrictCommandServer(handler CommandServerHandler, platformInterface PlatformInterface) (*CommandServer, error) {
+	return newCommandServer(handler, platformInterface, false, true)
 }
 
 // NewTransientCommandServer creates an independent service host without a command
 // listener or shared configuration, OOM, and power-report diagnostics.
 // StartOrReloadService starts its service; call CloseService before Close.
 func NewTransientCommandServer(handler CommandServerHandler, platformInterface PlatformInterface) (*CommandServer, error) {
-	return newCommandServer(handler, platformInterface, true)
+	return newCommandServer(handler, platformInterface, true, true)
 }
 
-func newCommandServer(handler CommandServerHandler, platformInterface PlatformInterface, transient bool) (*CommandServer, error) {
+func newCommandServer(handler CommandServerHandler, platformInterface PlatformInterface, transient, strictCleanup bool) (*CommandServer, error) {
 	ctx := baseContext(platformInterface)
 	powerManager := powerreport.NewManager()
 	service.MustRegister[*powerreport.Manager](ctx, powerManager)
@@ -80,12 +95,15 @@ func newCommandServer(handler CommandServerHandler, platformInterface PlatformIn
 		platformInterface: platformInterface,
 		platformWrapper:   platformWrapper,
 		powerManager:      powerManager,
+		commandCloseDone:  make(chan struct{}),
+		commandClosing:    make(chan struct{}),
 	}
 	server.StartedService = daemon.NewStartedService(daemon.ServiceOptions{
 		Context: ctx,
 		// Platform:         platformWrapper,
 		Handler:           (*platformHandler)(server),
 		KeepDefaultLogger: transient,
+		StrictCleanup:     strictCleanup,
 		Debug:             sDebug,
 		LogMaxLines:       sLogMaxLines,
 		OOMKillerEnabled:  sOOMKillerEnabled,
@@ -157,6 +175,24 @@ func (s *CommandServer) Start() error {
 	if s.transient {
 		return E.New("transient command server cannot start a command listener")
 	}
+	s.commandAccess.Lock()
+	if s.commandIsClosing {
+		s.commandAccess.Unlock()
+		return os.ErrClosed
+	}
+	if s.commandStartDone != nil {
+		s.commandAccess.Unlock()
+		return os.ErrExist
+	}
+	startDone := make(chan struct{})
+	s.commandStartDone = startDone
+	s.commandAccess.Unlock()
+	defer close(startDone)
+	select {
+	case <-s.commandClosing:
+		return os.ErrClosed
+	default:
+	}
 	var (
 		listener net.Listener
 		err      error
@@ -175,7 +211,11 @@ func (s *CommandServer) Start() error {
 			if !errors.Is(err, syscall.EROFS) {
 				break
 			}
-			time.Sleep(time.Second)
+			select {
+			case <-s.commandClosing:
+				return os.ErrClosed
+			case <-time.After(time.Second):
+			}
 		}
 		if err != nil {
 			return E.Cause(err, "listen command server")
@@ -194,32 +234,60 @@ func (s *CommandServer) Start() error {
 			return E.Cause(err, "listen command server")
 		}
 	}
-	s.listener = listener
 	serverOptions := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(unaryAuthInterceptor, daemon.UnaryLocaleInterceptor),
 		grpc.ChainStreamInterceptor(streamAuthInterceptor, daemon.StreamLocaleInterceptor),
 	}
-	s.grpcServer = grpc.NewServer(serverOptions...)
-	daemon.RegisterStartedServiceServer(s.grpcServer, s.StartedService)
-	daemon.RegisterManagedServiceServer(s.grpcServer, s.managedService)
+	grpcServer := grpc.NewServer(serverOptions...)
+	daemon.RegisterStartedServiceServer(grpcServer, s.StartedService)
+	daemon.RegisterManagedServiceServer(grpcServer, s.managedService)
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus(daemon.StartedService_ServiceDesc.ServiceName, grpc_health_v1.HealthCheckResponse_SERVING)
 	healthServer.SetServingStatus(daemon.ManagedService_ServiceDesc.ServiceName, grpc_health_v1.HealthCheckResponse_SERVING)
-	grpc_health_v1.RegisterHealthServer(s.grpcServer, healthServer)
-	go s.grpcServer.Serve(listener)
+	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
+	if s.beforeCommandPublish != nil {
+		s.beforeCommandPublish()
+	}
+	s.commandAccess.Lock()
+	if s.commandIsClosing {
+		s.commandAccess.Unlock()
+		listener.Close()
+		grpcServer.Stop()
+		return os.ErrClosed
+	}
+	s.listener = listener
+	s.grpcServer = grpcServer
+	s.commandAccess.Unlock()
+	go grpcServer.Serve(listener)
 	return nil
 }
 
 func (s *CommandServer) Close() {
-	if s.grpcServer != nil {
-		s.grpcServer.Stop()
-	}
-	common.Close(s.listener)
-	s.StartedService.Close()
-	if s.oomRecorder != nil {
-		s.oomRecorder.Close()
-	}
-	s.powerManager.Close()
+	s.commandCloseOnce.Do(func() {
+		s.commandAccess.Lock()
+		s.commandIsClosing = true
+		close(s.commandClosing)
+		startDone := s.commandStartDone
+		s.commandAccess.Unlock()
+		if startDone != nil {
+			<-startDone
+		}
+		s.commandAccess.Lock()
+		grpcServer, listener := s.grpcServer, s.listener
+		s.grpcServer, s.listener = nil, nil
+		s.commandAccess.Unlock()
+		if grpcServer != nil {
+			grpcServer.Stop()
+		}
+		common.Close(listener)
+		s.StartedService.Close()
+		if s.oomRecorder != nil {
+			s.oomRecorder.Close()
+		}
+		s.powerManager.Close()
+		close(s.commandCloseDone)
+	})
+	<-s.commandCloseDone
 }
 
 type OverrideOptions struct {
@@ -229,17 +297,20 @@ type OverrideOptions struct {
 }
 
 func (s *CommandServer) StartOrReloadService(configContent string, options *OverrideOptions) error {
+	var beforeStart func()
 	if !s.transient {
-		saveConfigSnapshot(configContent)
-		if s.powerManager.Recorder() != nil {
-			copyConfigSnapshot(filepath.Join(sWorkingPath, powerreport.DraftDirectoryName))
+		beforeStart = func() {
+			saveConfigSnapshot(configContent)
+			if s.powerManager.Recorder() != nil {
+				copyConfigSnapshot(filepath.Join(sWorkingPath, powerreport.DraftDirectoryName))
+			}
 		}
 	}
-	err := s.StartedService.StartOrReloadService(s.ctx, configContent, &daemon.OverrideOptions{
+	err := s.StartedService.StartOrReloadServiceWithBeforeStart(s.ctx, configContent, &daemon.OverrideOptions{
 		AutoRedirect:   options.AutoRedirect,
 		IncludePackage: iteratorToArray(options.IncludePackage),
 		ExcludePackage: iteratorToArray(options.ExcludePackage),
-	})
+	}, beforeStart)
 	if err != nil {
 		return E.Cause(err, "start or reload service")
 	}
@@ -373,4 +444,10 @@ func (h *platformHandler) WriteDebugMessage(message string) {
 
 func (h *platformHandler) ConnectSSHAgent() (int32, error) {
 	return (*CommandServer)(h).handler.ConnectSSHAgent()
+}
+
+// ExportTailscaleStoreRetirement returns scoped original StateStore terminals.
+// It is not a global cleanup or SDK task-quiescence certificate.
+func (s *CommandServer) ExportTailscaleStoreRetirement() string {
+	return s.StartedService.ExportTailscaleStoreRetirement()
 }
