@@ -1,0 +1,249 @@
+# Answers one question for a commit of the Polaris patch queue: can it be
+# built for the five targets the app consumes, and do the patches' own tests
+# pass. Nothing built here is released or consumed.
+#
+# Expected libbox symbols: a push always expects the six mobile symbols. The
+# desktop consumption point and the bare upstream baseline do not have them,
+# so check those with a manual run and expected_symbols set to none.
+#
+# The macOS and iOS jobs run on macos-latest, while upstream builds its Apple
+# library on a different runner image. Their first run result is still to be
+# confirmed.
+#
+# Go, JDK and NDK follow the app's source manifest, not the upstream workflows.
+name: Polaris self-check
+
+on:
+  push:
+    branches:
+      - polaris-main
+    tags:
+      - 'polaris-*'
+  workflow_dispatch:
+    inputs:
+      expected_symbols:
+        description: 'Expected libbox symbols: mobile, or none for the desktop point and the bare baseline'
+        type: choice
+        default: mobile
+        options:
+          - mobile
+          - none
+      base_ref:
+        description: 'Upstream baseline tag the queue is stacked on'
+        type: string
+        default: v1.15.0-alpha.10
+      run_instance_tests:
+        description: 'Also run the tests that start an instance in process'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: polaris-selfcheck-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GO_VERSION: '1.25.5'
+  GOTOOLCHAIN: local
+  BASE_REF: ${{ inputs.base_ref || 'v1.15.0-alpha.10' }}
+  EXPECTED_SYMBOLS: ${{ inputs.expected_symbols || 'mobile' }}
+  # NDK 30.0.16138531-beta3, as pinned by the app's ndk-linux-archive.json.
+  NDK_URL: https://dl.google.com/android/repository/android-ndk-r30-beta3-linux.zip
+  NDK_SHA256: 2698cca1e9f161048ecd84e1e70a556e1aa00b78409473d4c1e87969d40c3efc
+  NDK_ROOT: android-ndk-r30-beta3
+  # These tests start an instance in process, except the last one, which
+  # constructs a TUN inbound without starting it. None of them has run on this
+  # baseline yet, so they are kept out of the default gate.
+  INSTANCE_TESTS: >-
+    TestTransientCommandServerPreservesSharedState|TestCommandServerRetainsSharedDiagnostics|TestTransientCommandServerCloseKeepsPrimaryService|TestStrictPrimaryReloadThenFinalCloseIsTerminal|TestStrictPrimaryCloseWaitsForInFlightCommandStartBeforeAcknowledging|TestStrictPrimaryFailedOldCloseBlocksReloadAndRepeatsStickyFailure|TestTransientHTTPInboundRejectsMissingAndWrongSpeedtestCredentials|TestStrictTransientEarlyStartCleanupFailureBecomesSticky|TestUnstartedTUNValidationCannotDeleteOtherInstanceRules
+
+jobs:
+  linux:
+    name: Linux amd64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /dev/null \
+            -tags "$(cat release/DEFAULT_BUILD_TAGS),with_purego" \
+            -ldflags "$(cat release/LDFLAGS)" ./cmd/sing-box
+
+  windows_build:
+    name: Windows amd64 (cross)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build
+        run: |
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o /dev/null \
+            -tags "$(cat release/DEFAULT_BUILD_TAGS_WINDOWS)" \
+            -ldflags "$(cat release/LDFLAGS)" ./cmd/sing-box
+
+  windows_test:
+    name: Windows DNS regression
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Test
+        run: |
+          go test -count=20 -tags "$(cat release/DEFAULT_BUILD_TAGS_WINDOWS)" \
+            -ldflags "$(cat release/LDFLAGS)" ./dns/transport/local/systemconfig/ | tee test.log
+          grep -q '^ok' test.log
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, amd64]
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build
+        run: |
+          CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.arch }} go build -trimpath -o /dev/null \
+            -tags "$(cat release/DEFAULT_BUILD_TAGS)" \
+            -ldflags "$(cat release/LDFLAGS)" ./cmd/sing-box
+
+  android:
+    name: Android libbox (${{ matrix.go_arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go_arch: [arm64, arm]
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Setup Android NDK
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/ndk.zip" "$NDK_URL"
+          echo "$NDK_SHA256  $RUNNER_TEMP/ndk.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+          echo "ANDROID_NDK_HOME=$RUNNER_TEMP/$NDK_ROOT" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Build
+        run: |
+          make lib_install
+          gopath=$(go env GOPATH)
+          export PATH="$PATH:$gopath/bin"
+          go run ./cmd/internal/build_libbox -target android -platform android/${{ matrix.go_arch }}
+      - name: Check symbols
+        run: |
+          unzip -q -o libbox.aar classes.jar
+          javap -cp classes.jar io.nekohasekai.libbox.Libbox io.nekohasekai.libbox.CommandServer io.nekohasekai.libbox.PlatformInterface > symbols.txt
+          test -s symbols.txt
+          missing=0
+          present=0
+          for symbol in newTransientCommandServer newStrictCommandServer interfaceUpdateListenerIdentity checkConfigWithResult exportTailscaleStoreRetirement bindInterfaceControl; do
+            if grep -q " $symbol(" symbols.txt; then
+              present=$((present + 1))
+              echo "present $symbol"
+            else
+              missing=$((missing + 1))
+              echo "missing $symbol"
+            fi
+          done
+          if [ "$EXPECTED_SYMBOLS" = mobile ]; then
+            test "$missing" -eq 0
+          else
+            test "$present" -eq 0
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: polaris-selfcheck-android-${{ matrix.go_arch }}
+          path: libbox.aar
+          retention-days: 3
+
+  ios:
+    name: iOS libbox
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Patch Go for iOS
+        run: .github/patch_go_for_ios.sh
+      - name: Build
+        run: |
+          make lib_install
+          gopath=$(go env GOPATH)
+          export PATH="$PATH:$gopath/bin"
+          go run ./cmd/internal/build_libbox -target apple -platform ios/arm64
+      - name: Check symbols
+        run: |
+          find Libbox.xcframework -name '*.h' -exec cat {} + > symbols.txt
+          test -s symbols.txt
+          missing=0
+          present=0
+          for symbol in 'LibboxNewTransientCommandServer(' 'LibboxNewStrictCommandServer(' 'LibboxInterfaceUpdateListenerIdentity(' 'LibboxCheckConfigWithResult(' 'exportTailscaleStoreRetirement' 'bindInterfaceControl'; do
+            if grep -qF "$symbol" symbols.txt; then
+              present=$((present + 1))
+              echo "present $symbol"
+            else
+              missing=$((missing + 1))
+              echo "missing $symbol"
+            fi
+          done
+          if [ "$EXPECTED_SYMBOLS" = mobile ]; then
+            test "$missing" -eq 0
+          else
+            test "$present" -eq 0
+          fi
+
+  patch_tests:
+    name: Patch tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Test packages changed by the queue
+        run: |
+          git rev-parse --verify "refs/tags/$BASE_REF"
+          packages=$(git diff --name-only "refs/tags/$BASE_REF..HEAD" -- '*.go' | xargs -r -n1 dirname | sort -u | sed 's#^#./#')
+          if [ -z "$packages" ]; then
+            echo "no Go package changed since $BASE_REF"
+            exit 0
+          fi
+          echo "$packages"
+          # shellcheck disable=SC2086
+          go test -race -count=1 -skip "^($INSTANCE_TESTS)\$" \
+            -tags "$(cat release/DEFAULT_BUILD_TAGS),with_purego" \
+            -ldflags "$(cat release/LDFLAGS)" $packages | tee test.log
+          grep -q '^ok' test.log
+      - name: Test instances in process
+        if: ${{ inputs.run_instance_tests }}
+        run: |
+          go test -race -count=1 -v -run "^($INSTANCE_TESTS)\$" \
+            -tags "$(cat release/DEFAULT_BUILD_TAGS),with_purego" \
+            -ldflags "$(cat release/LDFLAGS)" ./experimental/libbox/ ./daemon/ | tee instance.log
+          grep -q '^--- PASS' instance.log
