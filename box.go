@@ -112,7 +112,52 @@ func Context(
 	return ctx
 }
 
+// ConstructionReport describes what constructing a box left behind.
+type ConstructionReport struct {
+	// Attempted is true once construction got far enough to acquire resources.
+	Attempted bool
+	// CleanupError is the result of releasing those resources after a failed
+	// construction.
+	CleanupError error
+}
+
+// New constructs a box. When construction fails, the resources acquired so
+// far are released in the background, so the error or panic is propagated
+// without waiting for cleanup.
 func New(options Options) (*Box, error) {
+	var (
+		scope    *adapter.Scope
+		instance *Box
+	)
+	defer func() {
+		if instance == nil && scope != nil {
+			go func() {
+				err := closeRecovering(scope.Close)
+				if err != nil {
+					log.Error(E.Cause(err, "release failed construction"))
+				}
+			}()
+		}
+	}()
+	instance, err := newBox(options, &scope)
+	return instance, err
+}
+
+// NewWithConstructionReport is like New, but waits for the cleanup of a
+// failed construction and reports its result.
+func NewWithConstructionReport(options Options) (instance *Box, err error, report ConstructionReport) {
+	var scope *adapter.Scope
+	defer func() {
+		report.Attempted = scope != nil
+		if instance == nil && scope != nil {
+			report.CleanupError = closeRecovering(scope.Close)
+		}
+	}()
+	instance, err = newBox(options, &scope)
+	return
+}
+
+func newBox(options Options, constructionScope **adapter.Scope) (*Box, error) {
 	createdAt := time.Now()
 	ctx := options.Context
 	if ctx == nil {
@@ -188,6 +233,12 @@ func New(options Options) (*Box, error) {
 		return nil, E.Cause(err, "create log factory")
 	}
 	service.MustRegister[log.Factory](ctx, logFactory)
+	// The scope is shared by construction and runtime: constructors register
+	// cleanup through adapter.DeferConstructionCleanup, components register
+	// theirs when they start, and closing it releases both.
+	scope := adapter.NewScope(ctx, logFactory.Logger())
+	*constructionScope = scope
+	ctx = adapter.ContextWithConstructionScope(ctx, scope)
 
 	var internalServices []adapter.LifecycleService
 	routeOptions := common.PtrValueOrDefault(options.Route)
@@ -489,7 +540,7 @@ func New(options Options) (*Box, error) {
 		logger:              logFactory.Logger(),
 		internalService:     internalServices,
 		ntpService:          ntpService,
-		scope:               adapter.NewScope(ctx, logFactory.Logger()),
+		scope:               scope,
 	}, nil
 }
 
