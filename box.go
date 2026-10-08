@@ -3,6 +3,8 @@ package box
 import (
 	"context"
 	"io"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -59,6 +61,9 @@ type Box struct {
 	internalService     []adapter.LifecycleService
 	ntpService          *ntp.Service
 	scope               *adapter.Scope
+	closeStarted        atomic.Bool
+	closeOnce           sync.Once
+	closeResult         error
 }
 
 type Options struct {
@@ -491,7 +496,7 @@ func New(options Options) (*Box, error) {
 func (s *Box) PreStart() error {
 	err := s.preStart()
 	if err != nil {
-		s.Close()
+		s.closeAfterStartFailure()
 		return err
 	}
 	s.logger.Info("sing-box pre-started (", F.Seconds(time.Since(s.createdAt).Seconds()), "s)")
@@ -501,7 +506,7 @@ func (s *Box) PreStart() error {
 func (s *Box) Start() error {
 	err := s.start()
 	if err != nil {
-		s.Close()
+		s.closeAfterStartFailure()
 		return err
 	}
 	s.logger.Info("sing-box started (", F.Seconds(time.Since(s.createdAt).Seconds()), "s)")
@@ -653,7 +658,49 @@ func (s *Box) start() error {
 	return nil
 }
 
+// closeAfterStartFailure closes the box after a failed start. If the box was
+// already closed, for example by a Close racing with the start, the start may
+// have registered cleanup after that close ran, so the scope is closed again
+// to run it.
+func (s *Box) closeAfterStartFailure() {
+	s.Close()
+	closeRecovering(s.scope.Close)
+}
+
+// closeRecovering runs closeFunc and turns a panic raised by one of its
+// cleanups into an error.
+func closeRecovering(closeFunc func() error) (err error) {
+	defer func() {
+		recovered := recover()
+		if recovered != nil {
+			err = E.New("panic during close: ", recovered)
+		}
+	}()
+	return closeFunc()
+}
+
+// Close closes the box. Only the first close returns the cleanup result;
+// later calls return nil without waiting for it.
 func (s *Box) Close() error {
+	if s.closeStarted.Swap(true) {
+		return nil
+	}
+	return s.CloseWithResult()
+}
+
+// CloseWithResult closes the box if it is not closed yet and returns the
+// result of the first close, waiting for it to complete if necessary. It
+// preserves the cleanup result that Start and PreStart discard when they
+// close the box after a failure.
+func (s *Box) CloseWithResult() error {
+	s.closeStarted.Store(true)
+	s.closeOnce.Do(func() {
+		s.closeResult = closeRecovering(s.finishClose)
+	})
+	return s.closeResult
+}
+
+func (s *Box) finishClose() error {
 	return s.scope.Close()
 }
 
