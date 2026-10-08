@@ -61,6 +61,10 @@ type Box struct {
 	internalService     []adapter.LifecycleService
 	ntpService          *ntp.Service
 	scope               *adapter.Scope
+	tsStoreMu           sync.Mutex
+	tsStores            []adapter.Endpoint
+	tsCaptured          bool
+	tsRetirement        []adapter.TailscaleStoreNode
 	closeStarted        atomic.Bool
 	closeOnce           sync.Once
 	closeResult         error
@@ -752,6 +756,10 @@ func (s *Box) CloseWithResult() error {
 }
 
 func (s *Box) finishClose() error {
+	// Seal the Tailscale state stores before anything is closed. A writer whose
+	// retirement stays unknown is reported by the endpoint's construction
+	// cleanup, which the scope runs last.
+	s.retireTailscaleStateStores()
 	return s.scope.Close()
 }
 
