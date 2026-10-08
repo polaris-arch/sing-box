@@ -47,6 +47,7 @@ type StartedService struct {
 	ctx context.Context
 	// platform adapter.PlatformInterface
 	handler           PlatformHandler
+	keepDefaultLogger bool
 	debug             bool
 	oomKillerEnabled  bool
 	oomKillerDisabled bool
@@ -81,6 +82,7 @@ type ServiceOptions struct {
 	Context context.Context
 	// Platform           adapter.PlatformInterface
 	Handler           PlatformHandler
+	KeepDefaultLogger bool
 	Debug             bool
 	LogMaxLines       int
 	OOMKillerEnabled  bool
@@ -98,6 +100,7 @@ func NewStartedService(options ServiceOptions) *StartedService {
 		ctx: options.Context,
 		// platform:                options.Platform,
 		handler:           options.Handler,
+		keepDefaultLogger: options.KeepDefaultLogger,
 		debug:             options.Debug,
 		logLines:          logRing{maxLines: options.LogMaxLines},
 		oomKillerEnabled:  options.OOMKillerEnabled,

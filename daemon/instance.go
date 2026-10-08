@@ -143,7 +143,9 @@ func (s *StartedService) newInstance(ctx context.Context, profileContent string,
 	i.outboundManager = service.FromContext[adapter.OutboundManager](ctx)
 	i.endpointManager = service.FromContext[adapter.EndpointManager](ctx)
 	i.logFactory = boxInstance.LogFactory()
-	log.SetStdLogger(boxInstance.LogFactory().Logger())
+	if !s.keepDefaultLogger {
+		log.SetStdLogger(boxInstance.LogFactory().Logger())
+	}
 	return i, nil
 }
 
