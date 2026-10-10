@@ -28,6 +28,15 @@ six CLI binaries, change tags, upload releases, or delete old releases.
    clobber. Exact remote asset names/sizes/digests and tag peel must match.
    It refuses an existing proposed tag; partial failures require inspection,
    never force overwrite or rollback deletion.
+   Draft lookup uses the authenticated paginated release list and requires
+   exactly one matching tag; the REST by-tag endpoint only returns published
+   releases. If stage fails after creating an empty draft, preserve its failure
+   receipt and inspect the remote tag object, peeled source, release ID, notes
+   and empty asset set. After independent review of this recovery change, use
+   resume-empty-draft with the new reviewed --approved-head, exact --release-id
+   and --expected-tag-object, unchanged manifest/hash and a new receipt path.
+   It does not create tags/releases and rejects nonempty drafts, duplicate tag
+   releases, modified notes or identity drift. No automatic retry or clobber.
 4. With the exact returned --release-id and the same reviewed source/manifest,
    the explicit publish action changes only draft/prerelease/latest flags,
    then anonymously downloads all ten stable release URLs and verifies each

@@ -15,6 +15,7 @@ import urllib.request
 REPO='polaris-arch/polaris-box'
 TAG='polaris-box-v1.15.0-alpha.11-2'
 SOURCE='a01da7a942b3a0dbbfdfda2bba5bd63d5bd9d932'
+TITLE='Polaris-box desktop CLI 1.15.0-alpha.11-2'
 
 
 def command(*args):
@@ -75,14 +76,37 @@ def public_readback(release,manifest):
     return records
 
 
+def find_draft_release(endpoint):
+    # The by-tag REST endpoint returns published releases, not drafts.
+    pages=api(endpoint+'?per_page=100','--paginate','--slurp')
+    matches=[release for page in pages for release in page if release['tag_name']==TAG]
+    if len(matches)!=1:raise ValueError('exactly one release for proposed tag required')
+    return matches[0]
+
+
+def validate_empty_draft(release,notes,release_id=None):
+    if release_id is not None and release['id']!=release_id:raise ValueError('draft release ID mismatch')
+    if (release['tag_name']!=TAG or not release['draft'] or not release['prerelease']
+            or release['name']!=TITLE or release['body']!=notes or release['assets']):
+        raise ValueError('exact empty draft identity/notes required; preserve and inspect')
+
+
 def execute(args):
     repo=args.repo.resolve()
     head=command('git','-C',str(repo),'rev-parse','HEAD')
     if head!=args.approved_head or command('git','-C',str(repo),'status','--porcelain'):raise ValueError('approved publication source HEAD must be exact and clean')
     manifest=validate_manifest(args.manifest,args.manifest_sha256)
     endpoint=f'repos/{REPO}/releases'
-    if args.action=='stage-draft':
-        if command('git','-C',str(repo),'ls-remote','https://github.com/'+REPO+'.git','refs/tags/'+TAG):raise ValueError('proposed tag already exists; preserve and inspect, never overwrite')
+    if args.action in ('stage-draft','resume-empty-draft'):
+        if args.action=='resume-empty-draft':
+            if args.release_id is None or not args.expected_tag_object:raise ValueError('exact inspected release ID and tag object required')
+            tag_object=validate_tag(repo)
+            if tag_object!=args.expected_tag_object:raise ValueError('inspected tag object drift')
+            release=find_draft_release(endpoint)
+            by_id=api(endpoint+'/'+str(args.release_id))
+            validate_empty_draft(release,(args.manifest.parent/'polaris-box-release-notes.md').read_text(),args.release_id)
+            validate_empty_draft(by_id,(args.manifest.parent/'polaris-box-release-notes.md').read_text(),args.release_id)
+        elif command('git','-C',str(repo),'ls-remote','https://github.com/'+REPO+'.git','refs/tags/'+TAG):raise ValueError('proposed tag already exists; preserve and inspect, never overwrite')
         remote=command('git','-C',str(repo),'remote','get-url','--push','polaris')
         if remote!='https://github.com/'+REPO+'.git':raise ValueError('polaris push remote mismatch')
         command('git','-C',str(repo),'cat-file','-e',SOURCE+'^{commit}')
@@ -92,12 +116,13 @@ def execute(args):
             for a in manifest['assets']:
                 target=snapshot/a['name'];shutil.copyfile(args.manifest.parent/a['name'],target)
                 if file_identity(target)!=a:raise ValueError('upload snapshot differs')
-            command('git','-C',str(repo),'tag','-a',TAG,SOURCE,'-m','Polaris desktop source a01 with six native distributions')
-            command('git','-C',str(repo),'push','polaris','refs/tags/'+TAG+':refs/tags/'+TAG)
-            tag_object=validate_tag(repo)
-            command('gh','release','create',TAG,'--repo',REPO,'--verify-tag','--draft','--prerelease','--latest=false','--title','Polaris-box desktop CLI 1.15.0-alpha.11-2','--notes-file',str(snapshot/'polaris-box-release-notes.md'))
-            release=api(endpoint+'/tags/'+TAG)
-            if not release['draft'] or not release['prerelease'] or release['tag_name']!=TAG:raise ValueError('created release is not the exact draft prerelease')
+            if args.action=='stage-draft':
+                command('git','-C',str(repo),'tag','-a',TAG,SOURCE,'-m','Polaris desktop source a01 with six native distributions')
+                command('git','-C',str(repo),'push','polaris','refs/tags/'+TAG+':refs/tags/'+TAG)
+                tag_object=validate_tag(repo)
+                command('gh','release','create',TAG,'--repo',REPO,'--verify-tag','--draft','--prerelease','--latest=false','--title',TITLE,'--notes-file',str(snapshot/'polaris-box-release-notes.md'))
+            release=find_draft_release(endpoint)
+            validate_empty_draft(release,(snapshot/'polaris-box-release-notes.md').read_text(),args.release_id if args.action=='resume-empty-draft' else None)
             for a in manifest['assets']:
                 command('gh','release','upload',TAG,str(snapshot/a['name']),'--repo',REPO)
             release=api(endpoint+'/'+str(release['id']))
@@ -121,12 +146,13 @@ def execute(args):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action',choices=['stage-draft','publish','verify-public'])
+    p.add_argument('action',choices=['stage-draft','resume-empty-draft','publish','verify-public'])
     p.add_argument('--repo',type=Path,default=Path(__file__).resolve().parents[1])
     p.add_argument('--approved-head',required=True,help='Parent-reviewed exact source SHA; execution requires separate publication authorization')
     p.add_argument('--manifest',type=Path,required=True)
     p.add_argument('--manifest-sha256',required=True)
     p.add_argument('--release-id',type=int)
+    p.add_argument('--expected-tag-object',help='Required for inspected empty-draft recovery; never recreate or overwrite a tag')
     p.add_argument('--receipt',type=Path,required=True)
     args=p.parse_args()
     if args.receipt.exists():raise ValueError('receipt already exists; preserve earlier evidence')
