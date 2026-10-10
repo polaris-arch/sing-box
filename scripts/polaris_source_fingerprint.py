@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import subprocess
 
+from polaris_go_environment import isolated_go_environment
+
 MODULE = 'github.com/sagernet/sing-tun'
 VERSION = 'v0.9.7-0.20261009022811-5c2edb183cc9'
 REPLACEMENT = './third_party/sing-tun'
@@ -21,6 +23,12 @@ def digest(path):
 
 
 def validate_replacements(modules, binding, repo):
+    mains = [module for module in modules if module.get('Main')]
+    if len(mains) != 1:
+        raise ValueError('exactly one frozen main module required; external workspace is forbidden')
+    main = mains[0]
+    if main.get('Path') != 'github.com/sagernet/sing-box' or Path(main.get('Dir', '')).resolve() != repo.resolve() or Path(main.get('GoMod', '')).resolve() != (repo / 'go.mod').resolve():
+        raise ValueError('main module Path/Dir/GoMod differs from the frozen repository')
     accepted = []
     for module in modules:
         replacement = module.get('Replace')
@@ -61,12 +69,13 @@ def collect(repo, expected_head, go, module_list_output):
     tree = git(repo, 'rev-parse', head + ':third_party/sing-tun')
     if tree != EXPECTED_REPLACEMENT_TREE or tree != binding['replacementTree']:
         raise ValueError('replacement full tree differs from approved binding')
-    version = subprocess.check_output([str(go), 'env', 'GOVERSION'], cwd=repo, text=True).strip()
+    environment = isolated_go_environment()
+    version = subprocess.check_output([str(go), 'env', 'GOVERSION'], cwd=repo, env=environment, text=True).strip()
     if version != 'go1.25.5':
         raise ValueError('this source fingerprint collector requires the approved Go1.25.5')
     # Run the real module resolver; a caller-supplied stale/forged module JSON
     # must not be accepted as current source evidence. Keep caches external.
-    module_bytes = subprocess.check_output([str(go), 'list', '-mod=readonly', '-m', '-json', 'all'], cwd=repo)
+    module_bytes = subprocess.check_output([str(go), 'list', '-mod=readonly', '-m', '-json', 'all'], cwd=repo, env=environment)
     modules = json_stream(module_bytes.decode())
     validate_replacements(modules, binding, repo)
     # Validate bytes and executable bits independently of status/index metadata.
@@ -91,6 +100,7 @@ def collect(repo, expected_head, go, module_list_output):
             'replacement': {**binding, 'bindingSha256': digest(binding_path)},
             'moduleListSha256': hashlib.sha256(module_bytes).hexdigest(), 'replacementFilesVerified': len(lines),
             'goVersion': version, 'goExecutableSha256': digest(go),
+            'isolatedGoSettings': {key: environment[key] for key in ('GOENV', 'GOWORK', 'GOFLAGS', 'GOTOOLCHAIN')},
             'scope': 'source identity only; no production kernel/platform/device acceptance'}
 
 
