@@ -1,4 +1,4 @@
-"""Offline assembly of the frozen three-platform source/notice review candidate."""
+"""Offline source/notice assembly bound to frozen native platform receipts."""
 import argparse
 import gzip
 import hashlib
@@ -48,6 +48,98 @@ def add_bytes(archive, name, data, mode=0o644):
     archive.addfile(member, io.BytesIO(data))
 
 
+SOURCE_COMMIT = 'a01da7a942b3a0dbbfdfda2bba5bd63d5bd9d932'
+SOURCE_TREE = '0bd19d8461347887c884f10250a402aa85decfe6'
+ORIGINAL_PRODUCER = '720ead161c71415e23f38a82c29d314a4754ab9c'
+REPAIR_PRODUCER = '226e88cab62b8818620668a28b496d833c01c953'
+NATIVE_BINDINGS = {
+    'linux/amd64': (38072592310, ORIGINAL_PRODUCER),
+    'linux/arm64': (38072592310, ORIGINAL_PRODUCER),
+    'windows/amd64': (38072592310, ORIGINAL_PRODUCER),
+    'windows/arm64': (38074825396, REPAIR_PRODUCER),
+    'darwin/amd64': (38074825396, REPAIR_PRODUCER),
+    'darwin/arm64': (38074825396, REPAIR_PRODUCER),
+}
+
+
+def validate_native_bindings(index, stage):
+    scope = index.get('scopeKey', 'original-three')
+    require(scope in ('original-three', 'desktop-six'), 'unknown native source scope')
+    wanted = set(NATIVE_BINDINGS) if scope == 'desktop-six' else {
+        'linux/amd64', 'linux/arm64', 'windows/amd64'}
+    platforms = index['platforms']
+    actual = [row['platform'] for row in platforms]
+    require(len(actual) == len(set(actual)) and set(actual) == wanted,
+            'native platform set mismatch: require exact unique ' + scope + ' targets')
+    require(index['sourceCommit'] == SOURCE_COMMIT and index['sourceTree'] == SOURCE_TREE
+            and index['sourceOverlay'] == 0, 'native source identity mismatch')
+    modules = {(m['module'], m['version'], m['h1']): m for m in index['modules']}
+    require(len(modules) == len(index['modules']), 'duplicate source-union module')
+    require(len({m['module'] for m in index['modules']}) == len(modules),
+            'multiple versions for one source-union module')
+    assembly = {r['path']: r for r in index['sourceAssemblyInputs']}
+    require(len(assembly) == len(index['sourceAssemblyInputs']), 'duplicate assembly input')
+    union = set()
+    for row in platforms:
+        platform = row['platform']
+        run, producer = NATIVE_BINDINGS[platform]
+        require(row['nativeAccepted'] is True and row['acceptedRun'] == run and
+                row['acceptedProducerCommit'] == producer and row['originalRun'] == run and
+                row['originalProducerCommit'] == producer, 'native producer/run binding mismatch')
+        require(row['productSourceCommit'] == SOURCE_COMMIT and row['productSourceTree'] == SOURCE_TREE,
+                'platform product source binding mismatch')
+        name = 'receipts/' + platform.replace('/', '-') + '-producer' + producer[:6] + '-run' + str(run) + '.json'
+        require(row.get('nativeReceiptPath', name) == name and name in assembly,
+                'missing exact native receipt input: ' + platform)
+        raw = input_path(stage, name).read_bytes()
+        expected = assembly[name]
+        require(len(raw) == expected['bytes'] and hashlib.sha256(raw).hexdigest() == expected['sha256'],
+                'native receipt bytes differ from frozen input: ' + platform)
+        receipt = json.loads(raw)
+        require(receipt['sourceCommit'] == SOURCE_COMMIT and receipt['sourceTree'] == SOURCE_TREE and
+                receipt['sourceOverlay'] == 0 and receipt['workflowCommit'] == producer and
+                str(receipt['workflowRun']) == str(run) and str(receipt['workflowAttempt']) == '1',
+                'native receipt source/producer/run identity mismatch: ' + platform)
+        require(receipt['archive']['sha256'] == row['archiveSha256'], 'native archive binding mismatch')
+        core_name = 'sing-box.exe' if platform.startswith('windows/') else 'sing-box'
+        require(receipt['payloadHashes'][core_name] == row['coreSha256'], 'native core binding mismatch')
+        current = set()
+        for line in receipt['buildInfo'].splitlines():
+            fields = line.split()
+            require(not fields or fields[0] != '=>', 'unexpected replaced module in frozen a01 receipt')
+            if fields and fields[0] == 'dep':
+                require(len(fields) == 4 and fields[3].startswith('h1:'), 'invalid native BuildInfo module')
+                key = tuple(fields[1:4])
+                require(key not in current and key in modules, 'native module missing or mismatched in source union')
+                current.add(key)
+        keys = {name + '@' + version for name, version, _ in current}
+        require(len(current) == row['moduleCount'] and len(row['moduleKeys']) == len(keys) and
+                set(row['moduleKeys']) == keys, 'native per-platform module membership mismatch')
+        notices = {i for key in current for i in modules[key]['noticeRecordIndexes']}
+        require(len(row['goNoticeRecordIndexes']) == len(notices) and
+                set(row['goNoticeRecordIndexes']) == notices, 'native module notice binding mismatch')
+        target = platform.replace('/', '_')
+        acquisition = row['prebuiltCronetInput']
+        actual_library = receipt['cronet']
+        require(acquisition['target'] == actual_library['target'] == target and
+                acquisition['module'] == 'github.com/sagernet/cronet-go/lib/' + target,
+                'native Cronet target/module binding mismatch')
+        for field in ('module', 'moduleVersion', 'moduleSum', 'sha256', 'gitBlob'):
+            require(acquisition[field] == actual_library[field], 'native Cronet input binding mismatch: ' + field)
+        require((acquisition['module'], acquisition['moduleVersion'], acquisition['moduleSum']) in current,
+                'native Cronet acquisition absent from BuildInfo')
+        union.update(current)
+    require(union == set(modules), 'source module union differs from actual native receipts')
+    require(index['verifiedSourceUnionModuleCount'] == len(union), 'source module union count mismatch')
+    for key, module in modules.items():
+        require(bool(module['noticeRecordIndexes']), 'module has no indexed notice candidate')
+        for number in module['noticeRecordIndexes']:
+            require(isinstance(number, int) and 0 <= number < len(index['noticeRecords']) and
+                    index['noticeRecords'][number]['source'] == key[0] + '@' + key[1],
+                    'module notice source/record binding mismatch')
+    return scope
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--evidence-root', type=pathlib.Path, required=True)
@@ -64,8 +156,7 @@ def main():
     require(index['publicationEligible'] is False and
             index['packageNoticeInputsAdoptedByProducer'] is False,
             'this helper only accepts unpublished, unadopted review inputs')
-    require(sum(row['nativeAccepted'] for row in index['platforms']) == 3,
-            'this frozen assembly recipe only covers three original platforms')
+    scope = validate_native_bindings(index, stage)
     notice = input_path(stage, 'DESKTOP-SOURCE-NOTICE-SUPERSET.txt')
     raw = notice.read_bytes()
     require(hashlib.sha256(raw).hexdigest() == index['noticeBundle']['sha256'],
@@ -140,36 +231,32 @@ def main():
                                           'sourceArchiveSha256': stdlib_expected['sha256']},
                     sourcePackageMembers=[{'path': name, 'bytes': expected['bytes'], 'sha256': expected['sha256']} for name, _, expected in sources])
     index_bytes = (json.dumps(portable, indent=2) + '\n').encode()
-    readme = b'''Polaris a01 desktop source/notice review candidate: three original platforms.
+    readme = ("Polaris a01 desktop source/notice review candidate: " + scope + ".\n\n"
+              "Actual platform receipts retain their original source/run/producer identities.\n"
+              "The source union has " + str(len(index['modules'])) + " modules and " +
+              str(sum(bool(m['sourceBundleMember']) for m in index['modules'])) + " source ZIPs.\n"
+              "The notice superset has " + str(len(index['noticeRecords'])) + " raw slices.\n"
+              "Original and explicitly Git-byte-restored Naiveproxy source remain separate.\n"
+              "The actual curated compiler-rt patch and generated/inline/nested source texts\n"
+              "remain in the conservative full source archives. This is not an original link\n"
+              "map, a claim of complete applicable notices, or a legal compliance guarantee.\n"
+              "Compiler/SDK/PGO binary reproducibility and applicable shipped-code/runtime\n"
+              "source and notice obligations are tracked separately.\n\n"
+              "Download pinned Cronet .so/.dll/.a; only the Go kernel is compiled. macOS\n"
+              "links the supplied .a. Use exact receipt flags and the saved producer recipes.\n"
+              "Binary-acquisition module ZIPs are indexed, not labelled Chromium source.\n\n"
+              "Existing six native binary archives still contain only six primary licenses.\n"
+              "Reviewed notice adoption, final archive/member checks and stable public source\n"
+              "delivery remain pending. Mobile carriers are a separate acceptance batch and\n"
+              "do not block the six desktop CLI technical acceptance. publicationEligible=false.\n").encode()
 
-This is the Linux amd64/arm64 and Windows amd64 source union from producer720ead
-run38072592310. It does not cover all six successful native jobs. Old receipts
-retain their actual producer/source identities; producer226e88 recipes supply
-reviewed build instructions and never relabel the old bytes.
-
-Sources include fixed kernel,147 Go source module ZIPs, Go1.25.5 standard-library
-source, original Cronet driver and original plus explicitly Git-byte-restored
-Naiveproxy source. Original exported CRLF differences are retained separately.
-The curated compiler-rt atomic patch remains in that source.264 notice slices
-preserve their raw source bytes, offsets and hashes. This is a conservative
-notice candidate and metadata reconstruction, not an original link map or a
-legal compliance guarantee. Compiler/SDK/PGO binary reproducibility is separate
-from applicable shipped-code/runtime source and notice obligations.
-
-Follow exact tags/flags/commands and frozen library identities in the receipts.
-Download the pinned existing Cronet .so/.dll/.a; build only the Go kernel.
-macOS links the supplied .a. No Chromium rebuild or global tool upgrade occurs.
-Binary-acquisition module ZIPs are indexed, not labelled Chromium source.
-
-Current native archives have not adopted these notice inputs. Controlled input
-review, six-platform delta inclusion, final archive receipts and stable public
-source delivery remain pending. publicationEligible is false.
-'''
     checksums = [(expected['sha256'], name) for name, _, expected in sources]
     checksums += [(hashlib.sha256(index_bytes).hexdigest(), 'SOURCE-INDEX.json'),
                   (hashlib.sha256(readme).hexdigest(), 'README.txt')]
     sum_bytes = ''.join(digest + '  ' + name + '\n' for digest, name in sorted(checksums, key=lambda row: row[1])).encode()
-    bundle = output_dir / 'polaris-box-a01-desktop-source-candidate-three-platforms-v3.tar.gz'
+    version = 'v4' if scope == 'desktop-six' else 'v3'
+    label = 'six-platforms' if scope == 'desktop-six' else 'three-platforms'
+    bundle = output_dir / ('polaris-box-a01-desktop-source-candidate-' + label + '-' + version + '.tar.gz')
     pending = bundle.with_name(bundle.name + '.pending')
     with pending.open('xb') as stream, gzip.GzipFile(filename=bundle.name, fileobj=stream, mode='wb', mtime=0, compresslevel=1) as compressed:
         with tarfile.open(fileobj=compressed, mode='w') as archive:
@@ -206,10 +293,11 @@ source delivery remain pending. publicationEligible is false.
     record = {'filename': bundle.name, 'bytes': bundle.stat().st_size, 'sha256': file_hash(bundle),
               'verifiedMemberCount': len(sources) + 3,
               'sourceModuleZipCount': sum(bool(m['sourceBundleMember']) for m in index['modules']),
-              'productSourceCommit': index['sourceCommit'], 'actualAcceptedPlatformCount': 3,
+              'productSourceCommit': index['sourceCommit'], 'actualAcceptedPlatformCount': len(index['platforms']),
+              'actualNativeSourceUnionComplete': True, 'sourceScope': scope,
               'completeSixTargetSource': False, 'noticeInputsAdoptedByNativeProducer': False,
               'publicSourceDeliveryPerformed': False, 'publicationEligible': False}
-    (output_dir / 'bounded-source-package-receipt-v3.json').write_text(json.dumps(record, indent=2) + '\n')
+    (output_dir / ('bounded-source-package-receipt-' + version + '.json')).write_text(json.dumps(record, indent=2) + '\n')
     print(json.dumps(record, indent=2))
 
 

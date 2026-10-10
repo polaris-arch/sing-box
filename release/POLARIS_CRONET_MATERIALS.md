@@ -61,14 +61,14 @@ establish a license gap. See desktop-source-candidate/evidence/compiler-rt-diffe
 
 ## Bounded candidate and controlled inputs
 
-The frozen original-three-platform source union has 150 actual BuildInfo modules:
+The retained historical original-three-platform source union has 150 actual BuildInfo modules:
 147 source ZIPs and three Cronet binary-acquisition modules. All source ZIP h1
 values were independently recomputed and matched BuildInfo plus the fixed a01
-go.sum. The six-platform union is 154: keybase/go-keychain and three additional
-Cronet acquisition modules are recorded separately, with their ZIP SHA256/h1
-checks. They are not yet incorporated into this frozen three-platform archive.
+go.sum. The new six-platform union is 154: keybase/go-keychain and three additional
+Cronet acquisition modules are now incorporated into the controlled index and
+separate v4 source package, retaining their verified ZIP SHA256/h1 bindings.
 
-The 972723-byte DESKTOP-SOURCE-NOTICE-SUPERSET.txt has 264 raw records: 185 module
+The historical three-platform v3 notice text has 264 raw records: 185 module
 filename candidates, 71 curated-engine texts/README metadata, five supplemental
 upstream files, one compiler-rt README, and Go LICENSE/PATENTS. Raw byte offsets,
 lengths and SHA256s are indexed, including CRLF bytes preserved by .gitattributes.
@@ -82,8 +82,10 @@ receipt before assembly. It rejects mismatched hashes, traversal, escaping
 symlinks, duplicate package names and reuse of an existing output directory.
 The retained v3 package is actually assembled by this helper, bounded below 300 MB,
 and independently verified against every one of its 170 members and SHA256SUMS.
-Its filename, byte size and SHA256 are in
-desktop-source-candidate/bounded-source-package-receipt-v3.json.
+The immutable historical v3 filename, byte size and SHA256 remain in
+desktop-source-candidate/bounded-source-package-receipt-v3.json. The current six
+platform controlled input has 268 records and 148 source ZIPs; the actual v4
+member count/size/hash is in bounded-source-package-receipt-v4.json.
 It contains 147 source ZIPs, exact kernel/driver/Naiveproxy source, derived Go 1.25.5
 standard-library source, notice text, compiler-rt investigation, three original
 native receipts and ten exact producer 226 build-recipe files. Library binary
@@ -124,8 +126,10 @@ libraries with bundled files. Compiler/SDK/PGO binary reproducibility is distinc
 from applicable shipped-code/source/notice obligations and is not a blanket
 requirement to archive every compiler binary before desktop publication.
 
-Independent review must assess applicable notices/runtime coverage, six-platform
-source deltas and the controlled input/assembly recipe. After review, adopt the
+Independent review must assess applicable notices/runtime coverage and the
+updated six-platform controlled input/assembly recipe. See the explicit
+inline/nested/generated/runtime and platform boundaries in
+desktop-source-candidate/POLARIS_DESKTOP_SOURCE_COVERAGE.md. After review, adopt the
 notice input in packaging and verify the new actual archive bytes; do not flip
 publicationEligible or relabel existing archives. Retain a bounded source package
 at a stable public download location with reviewed build/acquisition instructions.
@@ -135,3 +139,20 @@ a legal compliance guarantee. Android/Apple final carriers, NDK and load/byte
 acceptance form a separate batch and do not block these six desktop CLI results.
 No release, tag, deployment or device network change is made by this materials
 slice. publicationEligible remains false.
+
+## Six-platform increment and desktop publication preparation
+
+The updated helper validates the exact six-target set and receipt/module/notice
+bindings, not merely a count of successful platforms. The four additional modules,
+three raw repair receipts and four new raw notice slices expand the actual scope
+to all six desktop targets. Final members are checked against frozen expected
+hashes; a deterministic post-preflight same-length source replacement is rejected.
+The old v3 bytes are never overwritten or presented as six-platform source.
+
+Stable public source delivery can use one bounded source asset beside all six
+native packages in the same new prerelease, after independent materials and
+publication-flow review. This slice only prepares source/notice inputs and the
+local asset. Existing native archives still carry only six primary licenses;
+reviewed notice adoption and final new archive/member checks remain necessary.
+Android/Apple final carriers and NDK/gomobile validation are separate batches
+and do not block the six desktop CLI publication gate.
