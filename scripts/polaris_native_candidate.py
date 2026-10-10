@@ -10,6 +10,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import shlex
 import struct
 import subprocess
 import tarfile
@@ -36,6 +37,11 @@ def windows_native_machine(kernel=None):
         raise ValueError(f'unsupported native Windows machine: {native_machine.value:#x}')
     return {'nativeArch': arch, 'nativeMachine': native_machine.value,
             'processMachine': process_machine.value, 'api': 'IsWow64Process2'}
+
+
+def darwin_cgo_flags(sdk_path):
+    # Direct clang invocation needs the SDK that xcrun resolved, including at link.
+    return '-isysroot ' + shlex.quote(sdk_path) + ' -mmacosx-version-min=13.0'
 
 
 def digest(path):
@@ -264,9 +270,15 @@ def main():
         raise ValueError('wrong Go toolchain/native host')
     compiler = None
     if host_os == 'darwin':
-        env.update(CC=run(['xcrun', '--find', 'clang']).strip(), CGO_CFLAGS='-mmacosx-version-min=13.0', CGO_LDFLAGS='-mmacosx-version-min=13.0')
-        compiler = {'version': run([env['CC'], '--version']), 'SDK': run(['xcrun', '--show-sdk-version']),
-                    'SDKPath': run(['xcrun', '--show-sdk-path']), 'cgoCflags': env['CGO_CFLAGS'], 'cgoLdflags': env['CGO_LDFLAGS']}
+        sdk_path = run(['xcrun', '--sdk', 'macosx', '--show-sdk-path']).strip()
+        cgo_flags = darwin_cgo_flags(sdk_path)
+        env.update(CC=run(['xcrun', '--sdk', 'macosx', '--find', 'clang']).strip(),
+                   SDKROOT=sdk_path, CGO_CFLAGS=cgo_flags, CGO_LDFLAGS=cgo_flags)
+        run([env['CC'], '-isysroot', sdk_path, '-mmacosx-version-min=13.0',
+             '-x', 'c', '-fsyntax-only', '-include', 'stdlib.h', os.devnull], env=env)
+        compiler = {'version': run([env['CC'], '--version']), 'SDK': run(['xcrun', '--sdk', 'macosx', '--show-sdk-version']).strip(),
+                    'SDKPath': sdk_path, 'SDKROOT': env['SDKROOT'], 'stdlibHeaderCheck': 'passed',
+                    'cgoCflags': env['CGO_CFLAGS'], 'cgoLdflags': env['CGO_LDFLAGS']}
     def module(path, version):
         info = json.loads(run(['go', 'mod', 'download', '-json', path + '@' + version], source, env))
         if info.get('Error'):

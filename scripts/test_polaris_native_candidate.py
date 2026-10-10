@@ -1,4 +1,5 @@
 import io
+import shlex
 from pathlib import Path
 import tarfile
 import tempfile
@@ -6,7 +7,7 @@ import subprocess
 import unittest
 from unittest.mock import Mock
 import zipfile
-from polaris_native_candidate import archive_members, package, required_cronet_symbols, verify_required_exports, validate_cronet_rejection, windows_native_machine
+from polaris_native_candidate import archive_members, package, required_cronet_symbols, verify_required_exports, validate_cronet_rejection, windows_native_machine, darwin_cgo_flags
 
 from polaris_native_matrix import select_targets
 
@@ -148,10 +149,22 @@ class NativeMatrixTests(unittest.TestCase):
             self.assertEqual(select_targets(target['os'] + '/' + target['arch']), [target])
         self.assertEqual(select_targets('windows/arm64')[0]['runner'], 'windows-11-arm')
 
+    def test_only_three_failed_original_platforms_are_selected(self):
+        targets = select_targets('windows/arm64,darwin/amd64,darwin/arm64')
+        self.assertEqual([(target['os'], target['arch']) for target in targets],
+                         [('windows', 'arm64'), ('darwin', 'amd64'), ('darwin', 'arm64')])
+
     def test_missing_unknown_or_injected_selection_is_rejected(self):
-        for selection in ['', 'windows', 'windows/386', '${{ runner.os }}', 'all;echo bad']:
+        for selection in ['', 'windows', 'windows/386', '${{ runner.os }}', 'all;echo bad', 'windows/arm64,windows/arm64', 'all,darwin/amd64']:
             with self.subTest(selection=selection), self.assertRaises(ValueError):
                 select_targets(selection)
+
+
+class DarwinSdkTests(unittest.TestCase):
+    def test_sdk_path_is_an_exact_sysroot_argument_even_with_spaces(self):
+        sdk = '/Applications/Xcode Test.app/SDKs/MacOSX.sdk'
+        self.assertEqual(shlex.split(darwin_cgo_flags(sdk)),
+                         ['-isysroot', sdk, '-mmacosx-version-min=13.0'])
 
 
 if __name__ == '__main__':

@@ -14,11 +14,14 @@ TARGETS = [
 
 
 def select_targets(platform):
-    selected = TARGETS if platform == 'all' else [
-        target for target in TARGETS if platform == target['os'] + '/' + target['arch']]
-    if not selected:
-        raise ValueError('unknown candidate platform: ' + repr(platform))
-    return selected
+    if platform == 'all':
+        return TARGETS
+    requested = platform.split(',')
+    allowed = {target['os'] + '/' + target['arch'] for target in TARGETS}
+    if len(requested) != len(set(requested)) or not set(requested) <= allowed:
+        raise ValueError('unknown or duplicate candidate platform: ' + repr(platform))
+    return [target for target in TARGETS if target['os'] + '/' + target['arch'] in requested]
+
 
 
 if __name__ == '__main__':

@@ -3,11 +3,10 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: Native platform to validate (all or one affected platform)
-        type: choice
+        description: all or comma-separated os/arch from the six fixed native targets
+        type: string
         required: true
         default: all
-        options: [all, linux/amd64, linux/arm64, windows/amd64, windows/arm64, darwin/amd64, darwin/arm64]
 permissions:
   contents: read
 concurrency:
