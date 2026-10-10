@@ -2,6 +2,10 @@
 # built for the five targets the app consumes, and do the patches' own tests
 # pass. Nothing built here is released or consumed.
 #
+# Select source_role=desktop for the four desktop targets and Windows/patch
+# tests, or source_role=mobile for Android/iOS and patch tests. Each role uses
+# its own source_commit; all preserves the complete default push gate.
+#
 # Expected libbox symbols: a push always expects the six mobile symbols. The
 # desktop consumption point and the bare upstream baseline do not have them,
 # so check those with a manual run, source_commit set to their full SHA, and
@@ -34,10 +38,18 @@ on:
         options:
           - mobile
           - none
+      source_role:
+        description: 'Platform gates for this source role; all retains the default complete self-check'
+        type: choice
+        default: all
+        options:
+          - all
+          - desktop
+          - mobile
       base_ref:
         description: 'Upstream baseline tag the queue is stacked on'
         type: string
-        default: v1.15.0-alpha.10
+        default: v1.15.0-alpha.11
       run_instance_tests:
         description: 'Also run the tests that start an instance in process'
         type: boolean
@@ -47,7 +59,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: polaris-selfcheck-${{ github.ref }}
+  group: polaris-selfcheck-${{ github.ref }}-${{ inputs.source_role || 'all' }}-${{ inputs.source_commit || github.sha }}
   cancel-in-progress: true
 
 defaults:
@@ -58,7 +70,7 @@ env:
   SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
   GO_VERSION: '1.25.5'
   GOTOOLCHAIN: local
-  BASE_REF: ${{ inputs.base_ref || 'v1.15.0-alpha.10' }}
+  BASE_REF: ${{ inputs.base_ref || 'v1.15.0-alpha.11' }}
   EXPECTED_SYMBOLS: ${{ inputs.expected_symbols || 'mobile' }}
   # NDK 30.0.16138531-beta3, as pinned by the app's ndk-linux-archive.json.
   NDK_URL: https://dl.google.com/android/repository/android-ndk-r30-beta3-linux.zip
@@ -72,6 +84,7 @@ env:
 
 jobs:
   linux:
+    if: ${{ inputs.source_role != 'mobile' }}
     name: Linux amd64
     runs-on: ubuntu-latest
     steps:
@@ -90,10 +103,11 @@ jobs:
       - name: Build
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /dev/null \
-            -tags "$(cat release/DEFAULT_BUILD_TAGS),with_purego" \
+            -tags "$(cat release/DEFAULT_BUILD_TAGS),with_gvisor,with_purego" \
             -ldflags "$(cat release/LDFLAGS)" ./cmd/sing-box
 
   windows_build:
+    if: ${{ inputs.source_role != 'mobile' }}
     name: Windows amd64 (cross)
     runs-on: ubuntu-latest
     steps:
@@ -116,6 +130,7 @@ jobs:
             -ldflags "$(cat release/LDFLAGS)" ./cmd/sing-box
 
   windows_test:
+    if: ${{ inputs.source_role != 'mobile' }}
     name: Windows DNS regression
     runs-on: windows-latest
     steps:
@@ -138,6 +153,7 @@ jobs:
           grep -q '^ok' test.log
 
   macos:
+    if: ${{ inputs.source_role != 'mobile' }}
     name: macOS ${{ matrix.arch }}
     runs-on: macos-latest
     strategy:
@@ -160,10 +176,11 @@ jobs:
       - name: Build
         run: |
           CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.arch }} go build -trimpath -o /dev/null \
-            -tags "$(cat release/DEFAULT_BUILD_TAGS)" \
+            -tags "$(cat release/DEFAULT_BUILD_TAGS),with_gvisor" \
             -ldflags "$(cat release/LDFLAGS)" ./cmd/sing-box
 
   android:
+    if: ${{ inputs.source_role != 'desktop' }}
     name: Android libbox (${{ matrix.go_arch }})
     runs-on: ubuntu-latest
     strategy:
@@ -227,6 +244,7 @@ jobs:
           retention-days: 3
 
   ios:
+    if: ${{ inputs.source_role != 'desktop' }}
     name: iOS libbox
     runs-on: macos-latest
     steps:
@@ -242,6 +260,12 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ env.GO_VERSION }}
+      - name: Native monitor lifecycle regressions
+        run: |
+          CGO_ENABLED=1 go test -p 2 -parallel 2 -race -count=1 \
+            -run '^(TestMonitor|TestConstructionScope)' \
+            -tags "$(cat release/DEFAULT_BUILD_TAGS),with_purego" \
+            -ldflags "$(cat release/LDFLAGS)" ./experimental/libbox/ ./adapter/
       - name: Patch Go for iOS
         run: .github/patch_go_for_ios.sh
       - name: Build
