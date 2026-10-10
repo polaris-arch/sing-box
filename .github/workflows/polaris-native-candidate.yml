@@ -20,6 +20,7 @@ jobs:
           - {os: darwin, arch: amd64, tool_arch: x64, runner: macos-15-intel}
           - {os: darwin, arch: arm64, tool_arch: arm64, runner: macos-15}
     env:
+      PYTHONDONTWRITEBYTECODE: '1'
       GOMAXPROCS: '2'
       GOENV: 'off'
       GOWORK: 'off'
