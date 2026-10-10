@@ -19,7 +19,14 @@ have native gVisor TUN adapters, guarded by `with_gvisor`. Go's Android build al
 selects Linux files; iOS also selects Darwin files.
 
 All Polaris CLI release presets and the Android/Apple libbox build helper include
-`with_gvisor`. Windows retains `with_purego`, independently: Cronet's MSVC DLL
+`with_gvisor`. The non-Naive `DEFAULT_BUILD_TAGS_OTHERS` also includes `with_gvisor` and does
+not require Cronet. Its actual `build.yml` consumers include Linux 386 (SSE2 and
+softfloat), ARM5/6/7, MIPS/MIPSLE/MIPS64/MIPS64LE variants, s390x, ppc64le,
+riscv64, loong64, Android four architectures, Windows 386 and Windows 7 legacy
+amd64/386 rows, plus the legacy macOS amd64 row (with USBIP removed). Go 1.25.5
+Netstack/TUN package compilation is distinct from a complete CLI build or legacy
+OS runtime acceptance; the custom legacy Go toolchains remain separate gates.
+Windows retains `with_purego`, independently: Cronet's MSVC DLL
 cannot be linked by the Go MinGW CGO path at this dependency revision. Netstack's
 32-bit implementations must be evaluated by compilation; Google's runsc host
 restrictions do not establish restrictions of the SagerNet Netstack dependency.
@@ -71,8 +78,10 @@ submodule is `be1be963131154ba82761a7ed85ba426b2027319`.
 
 CGO files call the Cronet C ABI and link `.a`; purego files register the C functions
 through Dlopen/Dlsym (Unix) or LoadLibrary/GetProcAddress (Windows). The pinned
-64-bit Windows/Unix loaders require the same 255 symbols, including custom engine
-and dialer interfaces; a version string or string count alone is not ABI proof.
+Unix loader requires 255 symbols. On Windows amd64/arm64, loader_windows.go
+registers 253 C exports and loader_windows_float.go registers two additional
+network-thread-priority C exports, for the same total of 255. Both include custom
+engine and dialer interfaces; a version string or string count alone is not ABI proof.
 The Windows imports are OS DLLs, not evidence of a bundled Visual C++ runtime.
 Validate all imports on the actual supported OS; ELF DT_NEEDED, libc symbol
 versions, ELF/PE machine/class and Mach-O CPU/platform/deployment commands must be
