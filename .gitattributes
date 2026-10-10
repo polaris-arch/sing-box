@@ -1,0 +1,2 @@
+release/desktop-source-candidate/DESKTOP-SOURCE-NOTICE-SUPERSET.txt -text -diff
+release/desktop-source-candidate/receipts/windows-amd64-producer720ead-run38072592310.json -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
