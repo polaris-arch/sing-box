@@ -3,9 +3,11 @@ package adapter
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 
 	"github.com/sagernet/sing-box/log"
+	E "github.com/sagernet/sing/common/exceptions"
 )
 
 func TestDeferConstructionCleanupRegistersInScope(t *testing.T) {
@@ -71,5 +73,38 @@ func TestDeferConstructionCleanupRunsImmediatelyAfterScopeClosed(t *testing.T) {
 	err = scope.Close()
 	if err != nil || calls != 1 {
 		t.Fatalf("closed scope retained the cleanup: %v, %d calls", err, calls)
+	}
+}
+
+func TestConstructionScopeFiltersBenignCloseErrorsButKeepsFailure(t *testing.T) {
+	for _, fatal := range []bool{false, true} {
+		t.Run(map[bool]string{false: "benign", true: "fatal"}[fatal], func(t *testing.T) {
+			scope := NewScope(context.Background(), log.NewNOPFactory().Logger())
+			ctx := ContextWithConstructionScope(context.Background(), scope)
+			failure := errors.New("construction cleanup failure")
+			calls := 0
+			if err := DeferConstructionCleanup(ctx, func() error {
+				calls++
+				if fatal {
+					return E.Errors(net.ErrClosed, context.Canceled, failure)
+				}
+				return E.Errors(net.ErrClosed, context.Canceled)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			err := scope.Close()
+			if fatal && !errors.Is(err, failure) {
+				t.Fatalf("real cleanup error lost: %v", err)
+			}
+			if !fatal && err != nil {
+				t.Fatalf("benign close error leaked: %v", err)
+			}
+			if errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
+				t.Fatalf("benign errors retained in aggregate: %v", err)
+			}
+			if err := scope.Close(); err != nil || calls != 1 {
+				t.Fatal("cleanup not released exactly once")
+			}
+		})
 	}
 }
