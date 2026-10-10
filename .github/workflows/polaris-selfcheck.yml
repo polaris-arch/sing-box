@@ -4,7 +4,9 @@
 #
 # Expected libbox symbols: a push always expects the six mobile symbols. The
 # desktop consumption point and the bare upstream baseline do not have them,
-# so check those with a manual run and expected_symbols set to none.
+# so check those with a manual run, source_commit set to their full SHA, and
+# expected_symbols set to none. source_commit pins every checkout; github.sha
+# identifies the workflow revision, not necessarily the source under test.
 #
 # The macOS and iOS jobs run on macos-latest, while upstream builds its Apple
 # library on a different runner image. Their first run result is still to be
@@ -21,6 +23,10 @@ on:
       - 'polaris-*'
   workflow_dispatch:
     inputs:
+      source_commit:
+        description: 'Full 40-hex source commit in this fork; empty tests the workflow revision'
+        type: string
+        default: ''
       expected_symbols:
         description: 'Expected libbox symbols: mobile, or none for the desktop point and the bare baseline'
         type: choice
@@ -49,6 +55,7 @@ defaults:
     shell: bash
 
 env:
+  SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
   GO_VERSION: '1.25.5'
   GOTOOLCHAIN: local
   BASE_REF: ${{ inputs.base_ref || 'v1.15.0-alpha.10' }}
@@ -69,6 +76,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+      - name: Verify fixed source commit
+        run: |
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_commit must be a full lowercase 40-hex SHA' >&2; exit 1; }
+          actual=$(git rev-parse HEAD)
+          test "$actual" = "$SOURCE_COMMIT"
+          echo "workflow_commit=$GITHUB_SHA source_commit=$actual"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -83,6 +98,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+      - name: Verify fixed source commit
+        run: |
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_commit must be a full lowercase 40-hex SHA' >&2; exit 1; }
+          actual=$(git rev-parse HEAD)
+          test "$actual" = "$SOURCE_COMMIT"
+          echo "workflow_commit=$GITHUB_SHA source_commit=$actual"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -97,6 +120,14 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+      - name: Verify fixed source commit
+        run: |
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_commit must be a full lowercase 40-hex SHA' >&2; exit 1; }
+          actual=$(git rev-parse HEAD)
+          test "$actual" = "$SOURCE_COMMIT"
+          echo "workflow_commit=$GITHUB_SHA source_commit=$actual"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -115,6 +146,14 @@ jobs:
         arch: [arm64, amd64]
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+      - name: Verify fixed source commit
+        run: |
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_commit must be a full lowercase 40-hex SHA' >&2; exit 1; }
+          actual=$(git rev-parse HEAD)
+          test "$actual" = "$SOURCE_COMMIT"
+          echo "workflow_commit=$GITHUB_SHA source_commit=$actual"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -133,6 +172,14 @@ jobs:
         go_arch: [arm64, arm]
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+      - name: Verify fixed source commit
+        run: |
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_commit must be a full lowercase 40-hex SHA' >&2; exit 1; }
+          actual=$(git rev-parse HEAD)
+          test "$actual" = "$SOURCE_COMMIT"
+          echo "workflow_commit=$GITHUB_SHA source_commit=$actual"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -184,6 +231,14 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+      - name: Verify fixed source commit
+        run: |
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_commit must be a full lowercase 40-hex SHA' >&2; exit 1; }
+          actual=$(git rev-parse HEAD)
+          test "$actual" = "$SOURCE_COMMIT"
+          echo "workflow_commit=$GITHUB_SHA source_commit=$actual"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -222,7 +277,14 @@ jobs:
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
         with:
+          ref: ${{ env.SOURCE_COMMIT }}
           fetch-depth: 0
+      - name: Verify fixed source commit
+        run: |
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'source_commit must be a full lowercase 40-hex SHA' >&2; exit 1; }
+          actual=$(git rev-parse HEAD)
+          test "$actual" = "$SOURCE_COMMIT"
+          echo "workflow_commit=$GITHUB_SHA source_commit=$actual"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ env.GO_VERSION }}
