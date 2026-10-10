@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build native, unsigned review candidates only. No tag/release/API writes."""
 import argparse
+import ctypes
 import hashlib
 import io
 import json
@@ -14,6 +15,27 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+
+
+def windows_native_machine(kernel=None):
+    # GetNativeSystemInfo can report x64 to an emulated x64 process on ARM64.
+    # IsWow64Process2 returns the physical host architecture separately.
+    if kernel is None:
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.GetCurrentProcess.argtypes = []
+    kernel.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel.IsWow64Process2.argtypes = [ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_ushort), ctypes.POINTER(ctypes.c_ushort)]
+    kernel.IsWow64Process2.restype = ctypes.c_int
+    process_machine, native_machine = ctypes.c_ushort(), ctypes.c_ushort()
+    if not kernel.IsWow64Process2(kernel.GetCurrentProcess(),
+                                 ctypes.byref(process_machine), ctypes.byref(native_machine)):
+        raise OSError('IsWow64Process2 failed; native host architecture unavailable')
+    arch = {0x8664: 'amd64', 0xaa64: 'arm64'}.get(native_machine.value)
+    if arch is None:
+        raise ValueError(f'unsupported native Windows machine: {native_machine.value:#x}')
+    return {'nativeArch': arch, 'nativeMachine': native_machine.value,
+            'processMachine': process_machine.value, 'api': 'IsWow64Process2'}
 
 
 def digest(path):
@@ -221,17 +243,10 @@ def main():
     if output.is_relative_to(source):
         raise ValueError('build outputs must be outside frozen source checkout')
     host_os = {'Linux': 'linux', 'Windows': 'windows', 'Darwin': 'darwin'}[platform.system()]
-    # Native Windows kernel architecture; Python itself may be emulated on ARM64.
-    if host_os == 'windows':
-        import ctypes
-        class SystemInfo(ctypes.Structure):
-            _fields_ = [('architecture', ctypes.c_ushort), ('reserved', ctypes.c_ushort), ('pageSize', ctypes.c_ulong), ('minAddress', ctypes.c_void_p), ('maxAddress', ctypes.c_void_p), ('mask', ctypes.c_size_t), ('processors', ctypes.c_ulong), ('type', ctypes.c_ulong), ('granularity', ctypes.c_ulong), ('level', ctypes.c_ushort), ('revision', ctypes.c_ushort)]
-        native = SystemInfo()
-        ctypes.windll.kernel32.GetNativeSystemInfo(ctypes.byref(native))
-        native_windows_arch = {9: 'amd64', 12: 'arm64'}[native.architecture]
-    host_arch = {'x86_64': 'amd64', 'AMD64': 'amd64', 'aarch64': 'arm64', 'arm64': 'arm64', 'ARM64': 'arm64'}[platform.machine()]
-    if host_os == 'windows':
-        host_arch = native_windows_arch
+    host_machine = platform.machine()
+    windows_machine = windows_native_machine() if host_os == 'windows' else None
+    host_arch = windows_machine['nativeArch'] if windows_machine else {
+        'x86_64': 'amd64', 'aarch64': 'arm64', 'arm64': 'arm64'}[host_machine]
     if (host_os, host_arch) != (options.os, options.arch):
         raise ValueError('native host required; no cross build acceptance')
     if host_os == 'darwin' and subprocess.run(['sysctl', '-in', 'sysctl.proc_translated'], capture_output=True, text=True, check=False).stdout.strip() == '1':
@@ -370,7 +385,7 @@ def main():
                'upstreamBaseline': manifest['upstreamBaselineCommit'], 'sourceRole': manifest['sourceRole'], 'sourceOverlay': 0,
                'workflowCommit': os.environ.get('GITHUB_SHA'), 'workflowRun': os.environ.get('GITHUB_RUN_ID'),
                'workflowAttempt': os.environ.get('GITHUB_RUN_ATTEMPT'), 'job': os.environ.get('GITHUB_JOB'),
-               'runnerOS': platform.platform(), 'Go': go_info, 'compiler': compiler, 'CGO_ENABLED': env['CGO_ENABLED'],
+               'runnerOS': platform.platform(), 'pythonMachine': host_machine, 'windowsHostMachine': windows_machine, 'Go': go_info, 'compiler': compiler, 'CGO_ENABLED': env['CGO_ENABLED'],
                'tags': tags, 'ldflags': flags, 'buildCommand': command, 'buildInfo': run(['go', 'version', '-m', binary], source, env),
                'coreNative': inspect_binary(binary, host_os, host_arch), 'cronet': library, 'cronetNative': metadata,
                'nativeCronetSmoke': smoke, 'nativeCronetNegativeCases': negatives, 'sourceReviewed': False, 'licenseClosure': manifest['licenseClosure'],

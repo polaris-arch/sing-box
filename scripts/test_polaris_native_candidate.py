@@ -4,8 +4,11 @@ import tarfile
 import tempfile
 import subprocess
 import unittest
+from unittest.mock import Mock
 import zipfile
-from polaris_native_candidate import archive_members, package, required_cronet_symbols, verify_required_exports, validate_cronet_rejection
+from polaris_native_candidate import archive_members, package, required_cronet_symbols, verify_required_exports, validate_cronet_rejection, windows_native_machine
+
+from polaris_native_matrix import select_targets
 
 
 class CandidateArchiveTests(unittest.TestCase):
@@ -107,6 +110,48 @@ class CronetNegativeCategoryTests(unittest.TestCase):
                 (1, '{"version":"unexpected"}', expected)]:
             with self.subTest(code=code, stderr=stderr), self.assertRaisesRegex(ValueError, 'engine-version-mismatch'):
                 validate_cronet_rejection('wrong-version', subprocess.CompletedProcess([], code, stdout, stderr))
+
+
+class NativeWindowsHostTests(unittest.TestCase):
+    def kernel(self, process, native, success=True):
+        kernel = Mock()
+        kernel.GetCurrentProcess.return_value = 123
+        def machine(handle, process_out, native_out):
+            self.assertEqual(handle, 123)
+            process_out._obj.value, native_out._obj.value = process, native
+            return int(success)
+        kernel.IsWow64Process2.side_effect = machine
+        return kernel
+
+    def test_emulated_x64_python_uses_native_arm64_host(self):
+        result = windows_native_machine(self.kernel(0x8664, 0xaa64))
+        self.assertEqual(result['nativeArch'], 'arm64')
+        self.assertEqual(result['processMachine'], 0x8664)
+
+    def test_native_amd64_and_arm64_hosts(self):
+        for code, arch in [(0x8664, 'amd64'), (0xaa64, 'arm64')]:
+            with self.subTest(arch=arch):
+                self.assertEqual(windows_native_machine(self.kernel(0, code))['nativeArch'], arch)
+
+    def test_unknown_host_and_failed_api_never_fall_back_to_python(self):
+        with self.assertRaises(ValueError):
+            windows_native_machine(self.kernel(0x8664, 0x14c))
+        with self.assertRaises(OSError):
+            windows_native_machine(self.kernel(0x8664, 0xaa64, False))
+
+
+class NativeMatrixTests(unittest.TestCase):
+    def test_each_platform_selects_exactly_one_original_runner(self):
+        all_targets = select_targets('all')
+        self.assertEqual(len(all_targets), 6)
+        for target in all_targets:
+            self.assertEqual(select_targets(target['os'] + '/' + target['arch']), [target])
+        self.assertEqual(select_targets('windows/arm64')[0]['runner'], 'windows-11-arm')
+
+    def test_missing_unknown_or_injected_selection_is_rejected(self):
+        for selection in ['', 'windows', 'windows/386', '${{ runner.os }}', 'all;echo bad']:
+            with self.subTest(selection=selection), self.assertRaises(ValueError):
+                select_targets(selection)
 
 
 if __name__ == '__main__':
