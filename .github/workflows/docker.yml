@@ -16,8 +16,10 @@ on:
 env:
   REGISTRY_IMAGE: ghcr.io/sagernet/sing-box
 
+# Upstream publishing targets are unavailable to fork releases.
 jobs:
   build_binary:
+    if: github.repository == 'SagerNet/sing-box'
     name: Build binary
     runs-on: ubuntu-latest
     strategy:
@@ -158,6 +160,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   build_docker:
+    if: github.repository == 'SagerNet/sing-box'
     name: Build Docker image
     runs-on: ubuntu-latest
     needs:
@@ -245,7 +248,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   merge:
-    if: github.event_name != 'push'
+    if: github.repository == 'SagerNet/sing-box' && github.event_name != 'push'
     runs-on: ubuntu-latest
     needs:
       - build_docker
@@ -282,7 +285,7 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Create manifest list and push
-        if: github.event_name != 'push'
+        if: github.repository == 'SagerNet/sing-box' && github.event_name != 'push'
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create \
@@ -290,7 +293,7 @@ jobs:
             -t "${{ env.REGISTRY_IMAGE }}:${{ steps.ref.outputs.ref }}" \
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
       - name: Inspect image
-        if: github.event_name != 'push'
+        if: github.repository == 'SagerNet/sing-box' && github.event_name != 'push'
         run: |
           docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ env.DOCKER_TAG }}
           docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.ref.outputs.ref }}
