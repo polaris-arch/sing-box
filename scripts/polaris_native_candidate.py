@@ -359,6 +359,8 @@ def main():
         if any(extracted_smoke[key] != smoke[key] for key in ('os', 'arch', 'version', 'linkage', 'gvisorCompiled')):
             raise ValueError('extracted native capability receipt differs')
         receipt['extractedNativeCronetSmoke'] = extracted_smoke
+    if run(['git', 'rev-parse', 'HEAD'], source).strip() != manifest['sourceCommit'] or run(['git', 'rev-parse', 'HEAD^{tree}'], source).strip() != manifest['sourceTree']:
+        raise ValueError('source SHA/tree changed during producer')
     if run(['git', 'status', '--porcelain=v1', '--untracked-files=all'], source):
         raise ValueError('frozen source changed during producer')
     receipt['archive'] = {'name': archive.name, 'bytes': archive.stat().st_size, 'sha256': digest(archive),
