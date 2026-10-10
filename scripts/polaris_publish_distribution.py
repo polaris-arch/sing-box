@@ -78,8 +78,12 @@ def public_readback(release,manifest):
 
 def find_draft_release(endpoint):
     # The by-tag REST endpoint returns published releases, not drafts.
-    pages=api(endpoint+'?per_page=100','--paginate','--slurp')
-    matches=[release for page in pages for release in page if release['tag_name']==TAG]
+    matches=[];page=1
+    while True:
+        releases=api(endpoint+f'?per_page=100&page={page}')
+        matches.extend(release for release in releases if release['tag_name']==TAG)
+        if len(releases)<100:break
+        page+=1
     if len(matches)!=1:raise ValueError('exactly one release for proposed tag required')
     return matches[0]
 

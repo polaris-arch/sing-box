@@ -51,11 +51,11 @@ class PublicationTests(unittest.TestCase):
             with self.assertRaises(ValueError):publish.public_readback(release,{'assets':assets})
     def test_draft_list_pagination_requires_unique_exact_tag(self):
         r={'tag_name':publish.TAG,'id':409181431}
-        with patch.object(publish,'api',return_value=[[{'tag_name':'other'}],[r]]) as api:
+        with patch.object(publish,'api',side_effect=[[{'tag_name':'other'}]*100,[r]]) as api:
             self.assertEqual(publish.find_draft_release('endpoint'),r)
-            api.assert_called_once_with('endpoint?per_page=100','--paginate','--slurp')
-        for pages in [[],[[]],[[r],[r]]]:
-            with patch.object(publish,'api',return_value=pages):
+            self.assertEqual(api.call_args_list,[unittest.mock.call('endpoint?per_page=100&page=1'),unittest.mock.call('endpoint?per_page=100&page=2')])
+        for pages in [[[]],[[r]*100,[r]]]:
+            with patch.object(publish,'api',side_effect=pages):
                 with self.assertRaises(ValueError):publish.find_draft_release('endpoint')
 
     def test_empty_draft_identity_rejects_all_drift(self):
@@ -93,7 +93,7 @@ class PublicationTests(unittest.TestCase):
                     self.assertIn(item,assets)
                 return ''
             def api(endpoint,*values):
-                if values:return [[empty]]
+                if '?per_page=' in endpoint:return [empty]
                 if sum(c[:3]==('gh','release','upload') for c in calls)==10:
                     return dict(empty,assets=[{'name':a['name'],'size':a['bytes'],'digest':'sha256:'+a['sha256']} for a in assets])
                 return empty
@@ -104,7 +104,7 @@ class PublicationTests(unittest.TestCase):
             self.assertFalse(any('create' in c or 'push' in c or 'tag' in c or '--clobber' in c for c in calls))
             for drift in [dict(empty,assets=[{'name':'partial'}]),dict(empty,id=1),dict(empty,body='changed')]:
                 calls.clear()
-                with patch.object(publish,'command',side_effect=command),patch.object(publish,'api',return_value=[[drift]]),patch.object(publish,'validate_tag',return_value='inspected'):
+                with patch.object(publish,'command',side_effect=command),patch.object(publish,'api',return_value=[drift]),patch.object(publish,'validate_tag',return_value='inspected'):
                     with self.assertRaises(ValueError):publish.execute(args)
                 self.assertFalse(any(c[0]=='gh' for c in calls))
             calls.clear()
