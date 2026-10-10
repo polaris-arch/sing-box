@@ -91,3 +91,33 @@ reviewed producer SHA. Final Android AAR and Apple libbox carriers require a
 separate producer and final-link/load/byte checks; the existing seven Cronet
 mobile archives alone are not those deliverables. No CI is dispatched by this
 material recovery, no tag is created, and publicationEligible remains false.
+
+## Additional graph and kernel source evidence
+
+polaris-cronet-graph-kernel-materials.json records a metadata-only reconstruction
+of Linux amd64 cronet and cronet_static GN dependency roots using the pinned GN
+tool and fixed source. Each reaches 625 targets and 5,329 source paths; these
+include actions and build tools. Twenty-one curated README components are mapped
+to reachable targets. Perfetto, protobuf and compiler-rt require supplemental
+notices recovered from pinned upstreams. Protobuf and Perfetto representative
+source bytes match; compiler-rt atomic.c differs and remains unresolved. The
+graph does not establish the original link inputs of the existing libraries.
+Linux arm64 generation stops on the missing host sysroot; other host graphs
+remain unverified. No Chromium compilation or global tool change was performed.
+
+For the actual local fixed a01 Linux amd64 kernel, all 140 cached module ZIPs
+were independently hashed with the Go h1 algorithm and matched both BuildInfo
+and frozen go.sum. Their 175 notice filenames are candidates for review, not a
+complete linked-code notice bundle. The Cronet lib module is a binary input and
+does not replace separately recovered Chromium source. All 1,689 kernel source
+archive blobs and modes match Git. Three client Gitlinks are metadata only in
+that CLI archive. The cached Go 1.25.5 toolchain ZIP matches its cache h1 and
+includes standard-library source; its LICENSE and PATENTS are preserved here.
+This local evidence must be compared against each actual hosted final kernel.
+
+The six-host technical workflow was separately reviewed and dispatched from
+720ead161c71415e23f38a82c29d314a4754ab9c as run 38072592310. This materials branch
+does not dispatch CI and is not the producer dispatch target. Existing libraries
+continue to be downloaded: Linux/Windows use .so/.dll, macOS links the fixed .a
+while building the Go kernel. Final package/source/notice acceptance remains
+open and publicationEligible stays false.
