@@ -39,6 +39,17 @@ func New(ctx context.Context, options option.DialerOptions, remoteIsDomain bool)
 
 func NewWithOptions(options Options) (N.Dialer, error) {
 	dialOptions := options.Options
+	if resolver := dialOptions.DomainResolver; resolver != nil {
+		if err := resolver.Validate(); err != nil {
+			return nil, err
+		}
+		// DNS transports must bootstrap through an explicit server, even when
+		// their own address is an IP or their connection uses a detour.
+		if options.DirectResolver && resolver.Mode == option.DomainResolverModeRules {
+			return nil, E.New("DNS server domain_resolver cannot use rules mode")
+		}
+	}
+	hasDomainResolver := dialOptions.DomainResolver != nil && (dialOptions.DomainResolver.Server != "" || dialOptions.DomainResolver.Mode == option.DomainResolverModeRules)
 	var (
 		dialer N.Dialer
 		err    error
@@ -62,12 +73,11 @@ func NewWithOptions(options Options) (N.Dialer, error) {
 			return nil, err
 		}
 	}
-	if options.RemoteIsDomain && (!hasDetour || options.ResolverOnDetour || dialOptions.DomainResolver != nil && dialOptions.DomainResolver.Server != "") {
+	if options.RemoteIsDomain && (!hasDetour || options.ResolverOnDetour || hasDomainResolver) {
 		var (
 			server          string
 			dnsQueryOptions adapter.DNSQueryOptions
 		)
-		hasDomainResolver := dialOptions.DomainResolver != nil && dialOptions.DomainResolver.Server != ""
 		if options.DirectResolver {
 			if !hasDomainResolver {
 				return nil, E.New("missing domain resolver for domain server address")
@@ -102,6 +112,14 @@ func NewWithOptions(options Options) (N.Dialer, error) {
 }
 
 func NewDNSQueryOptions(ctx context.Context, domainResolver *option.DomainResolveOptions, newDialer bool) (adapter.DNSQueryOptions, error) {
+	if domainResolver != nil {
+		if err := domainResolver.Validate(); err != nil {
+			return adapter.DNSQueryOptions{}, err
+		}
+		if domainResolver.Mode == option.DomainResolverModeRules {
+			return domainResolveQueryOptions(domainResolver), nil
+		}
+	}
 	dnsTransport := service.FromContext[adapter.DNSTransportManager](ctx)
 	if domainResolver != nil && domainResolver.Server != "" {
 		transport, loaded := dnsTransport.Transport(domainResolver.Server)
@@ -113,6 +131,9 @@ func NewDNSQueryOptions(ctx context.Context, domainResolver *option.DomainResolv
 		return dnsQueryOptions, nil
 	}
 	defaultOptions := service.FromContext[adapter.NetworkManager](ctx).DefaultOptions()
+	if defaultOptions.DomainResolveOptions.UseRules {
+		return defaultOptions.DomainResolveOptions, nil
+	}
 	if defaultOptions.DomainResolver != "" {
 		transport, loaded := dnsTransport.Transport(defaultOptions.DomainResolver)
 		if !loaded {
@@ -134,6 +155,7 @@ func NewDNSQueryOptions(ctx context.Context, domainResolver *option.DomainResolv
 
 func domainResolveQueryOptions(domainResolver *option.DomainResolveOptions) adapter.DNSQueryOptions {
 	return adapter.DNSQueryOptions{
+		UseRules:               domainResolver.Mode == option.DomainResolverModeRules,
 		Strategy:               C.DomainStrategy(domainResolver.Strategy),
 		Timeout:                time.Duration(domainResolver.Timeout),
 		DisableCache:           domainResolver.DisableCache,

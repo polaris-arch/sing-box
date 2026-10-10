@@ -1247,6 +1247,20 @@ func (r *Router) finishExchangeAsync(message *mDNS.Msg, transport adapter.DNSTra
 }
 
 func (r *Router) Lookup(ctx context.Context, domain string, options adapter.DNSQueryOptions) ([]netip.Addr, error) {
+	if options.UseRules {
+		if options.Transport != nil {
+			return nil, E.New("rules lookup cannot specify a DNS transport")
+		}
+		timeout := options.Timeout
+		if timeout == 0 {
+			timeout = C.DNSTimeout
+		}
+		// All A/AAAA queries, evaluate actions and fallback layers share this
+		// deadline. Per-action timeouts may shorten it but cannot extend it.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	r.rulesAccess.RLock()
 	if r.closing {
 		r.rulesAccess.RUnlock()
