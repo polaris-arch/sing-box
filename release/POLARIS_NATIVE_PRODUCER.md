@@ -17,7 +17,7 @@ publishes/replaces its own assets.
 |---|---|---|---|
 | Linux amd64 | ubuntu-24.04 | sibling SO, purego | exact module/blob/byte identity, ELF64 machine/deps/versions/255 exports, native engine version, package extraction/reload |
 | Linux arm64 | ubuntu-24.04-arm | sibling SO, purego | same checks on a native ARM64 host |
-| Windows amd64 | windows-2025 | sibling DLL, purego | exact identity, PE machine/imports/delay imports/253 exports, native load/version, extraction/reload |
+| Windows amd64 | windows-2025 | sibling DLL, purego | exact identity, PE machine/imports/delay imports/255 exports (253 base + two float C exports), native load/version, extraction/reload |
 | Windows arm64 | windows-11-arm | sibling DLL, purego | same checks; native kernel and Go host architecture checked |
 | macOS amd64 | macos-15-intel | static archive, CGO | exact identity, native archive ABI symbols, final thin Mach-O CPU/load commands/deps, native version, extraction/reload |
 | macOS arm64 | macos-15 | static archive, CGO | same checks; macOS 13 compiler minimum; Rosetta execution rejected |

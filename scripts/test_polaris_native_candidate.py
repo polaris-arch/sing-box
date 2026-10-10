@@ -4,7 +4,7 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
-from polaris_native_candidate import archive_members, package
+from polaris_native_candidate import archive_members, package, required_cronet_symbols, verify_required_exports
 
 
 class CandidateArchiveTests(unittest.TestCase):
@@ -52,6 +52,28 @@ class CandidateArchiveTests(unittest.TestCase):
                     writer.writestr(entry, b'/outside')
                 with self.assertRaises(ValueError):
                     archive_members(path)
+
+
+class CronetRequiredExportsTests(unittest.TestCase):
+    def test_windows_64_bit_float_exports_are_required(self):
+        core = 'Cronet_Engine_Create'
+        floats = ['Cronet_EngineParams_network_thread_priority_set',
+                  'Cronet_EngineParams_network_thread_priority_get']
+        with tempfile.TemporaryDirectory() as directory:
+            wrapper = Path(directory)
+            source = wrapper / 'internal/cronet'
+            source.mkdir(parents=True)
+            (source / 'loader_windows.go').write_text(f'registerFunc(&engineCreate, "{core}")')
+            (source / 'loader_windows_float.go').write_text('\n'.join(
+                f'registerFunc(&function, "{symbol}")' for symbol in floats))
+            for arch in ('amd64', 'arm64'):
+                with self.subTest(arch=arch):
+                    required = required_cronet_symbols(wrapper, 'windows', arch)
+                    self.assertEqual(required, {core, *floats})
+                    verify_required_exports(required, required)
+                    for missing in floats:
+                        with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, missing):
+                            verify_required_exports(required, required - {missing})
 
 
 if __name__ == '__main__':

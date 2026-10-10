@@ -29,6 +29,26 @@ def run(args, cwd=None, env=None):
     return result.stdout
 
 
+def required_cronet_symbols(wrapper_dir, os_name, arch):
+    files = ['loader_windows.go'] if os_name == 'windows' else ['loader_unix.go']
+    if os_name == 'windows' and arch in ('amd64', 'arm64'):
+        files.append('loader_windows_float.go')
+    required = set()
+    for filename in files:
+        source = (wrapper_dir / 'internal/cronet' / filename).read_text()
+        symbols = re.findall(r'registerFunc\([^,\n]+,\s*"([^"]+)"', source)
+        if not symbols:
+            raise ValueError('no required symbols extracted from ' + filename)
+        required.update(symbols)
+    return required
+
+
+def verify_required_exports(required, exported):
+    missing = required - set(exported)
+    if missing:
+        raise ValueError('Cronet required C exports missing: ' + ', '.join(sorted(missing)))
+
+
 def pe_metadata(data):
     if data[:2] != b'MZ':
         raise ValueError('not PE')
@@ -228,24 +248,19 @@ def main():
     if wrapper['Origin']['Hash'] != manifest['wrapperCommit']:
         raise ValueError('wrapper source differs')
     wrapper_dir = Path(wrapper['Dir'])
+    required = required_cronet_symbols(wrapper_dir, host_os, host_arch)
     if host_os == 'windows':
-        required = set(re.findall(r'registerFunc\([^,\n]+,\s*"([^"]+)"', (wrapper_dir / 'internal/cronet/loader_windows.go').read_text()))
         metadata = inspect_binary(raw, host_os, host_arch)
-        if required - set(metadata['exports']):
-            raise ValueError('Cronet DLL required exports missing')
+        verify_required_exports(required, metadata['exports'])
     elif host_os == 'linux':
-        required = set(re.findall(r'registerFunc\([^,\n]+,\s*"([^"]+)"', (wrapper_dir / 'internal/cronet/loader_unix.go').read_text()))
         symbols = run(['readelf', '--dyn-syms', '--wide', raw])
         exported = {line.split()[-1].split('@')[0] for line in symbols.splitlines() if ' UND ' not in line and len(line.split()) > 7}
-        if required - exported:
-            raise ValueError('Cronet SO required exports missing')
+        verify_required_exports(required, exported)
         metadata = inspect_binary(raw, host_os, host_arch)
     else:
-        required = set(re.findall(r'registerFunc\([^,\n]+,\s*"([^"]+)"', (wrapper_dir / 'internal/cronet/loader_unix.go').read_text()))
         symbols = run(['xcrun', 'nm', '-gU', '-j', raw])
         exported = {line.strip().removeprefix('_') for line in symbols.splitlines()}
-        if required - exported:
-            raise ValueError('Cronet static archive required ABI symbols missing')
+        verify_required_exports(required, exported)
         metadata = {'format': 'static archive', 'requiredSymbolsVerified': sorted(required),
                     'nativeNmOutputSHA256': hashlib.sha256(symbols.encode()).hexdigest(),
                     'byteMatchedPriorObjectInventory': library['observedNative']}

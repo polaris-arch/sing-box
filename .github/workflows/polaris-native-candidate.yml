@@ -24,6 +24,12 @@ jobs:
     env:
       GOTOOLCHAIN: local
       GOMAXPROCS: '2'
+      # Apply before both checkouts; byte-pinned licenses must remain Git blob bytes.
+      GIT_CONFIG_COUNT: '2'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+      GIT_CONFIG_KEY_1: core.eol
+      GIT_CONFIG_VALUE_1: lf
     steps:
       - name: Checkout producer revision
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
