@@ -59,3 +59,5 @@ AppAdmissible=false and realWindowsDNSAcceptance=false. Real OS/TUN/network,
 mobile carrier final links, distribution trust and App full-config acceptance
 are separate unverified boundaries. Whole-batch source review precedes the one
 necessary native CI dispatch. No tags/releases/main/device writes occur here.
+
+Pinned Go 1.25.5 requires a standalone source checkout with a real `.git` directory for VCS stamping. The producer rejects worktree gitfiles before downloading or building; the final binary must still carry the exact source SHA and `vcs.modified=false`.

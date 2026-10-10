@@ -7,7 +7,7 @@ import subprocess
 import unittest
 from unittest.mock import Mock
 import zipfile
-from polaris_native_candidate import archive_members, package, required_cronet_symbols, verify_required_exports, validate_cronet_rejection, windows_native_machine, darwin_cgo_flags
+from polaris_native_candidate import archive_members, package, required_cronet_symbols, verify_required_exports, validate_cronet_rejection, windows_native_machine, darwin_cgo_flags, require_vcs_checkout
 
 
 
@@ -145,6 +145,20 @@ class DarwinSdkTests(unittest.TestCase):
         sdk = '/Applications/Xcode Test.app/SDKs/MacOSX.sdk'
         self.assertEqual(shlex.split(darwin_cgo_flags(sdk)),
                          ['-isysroot', sdk, '-mmacosx-version-min=13.0'])
+
+
+class VcsCheckoutTests(unittest.TestCase):
+    def test_worktree_gitfile_and_missing_repository_fail_before_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            with self.assertRaisesRegex(ValueError, 'standalone .git directory'):
+                require_vcs_checkout(source)
+            (source / '.git').write_text('gitdir: /external/worktree/metadata')
+            with self.assertRaisesRegex(ValueError, 'standalone .git directory'):
+                require_vcs_checkout(source)
+            (source / '.git').unlink()
+            (source / '.git').mkdir()
+            require_vcs_checkout(source)
 
 
 if __name__ == '__main__':

@@ -240,6 +240,13 @@ def package(root, destination, os_name):
     return actual
 
 
+def require_vcs_checkout(source):
+    # Pinned Go 1.25.5 discovers Git via a .git directory, not a worktree gitfile.
+    # Fail before downloads/builds; actual binary VCS metadata remains mandatory.
+    if not (source / '.git').is_dir():
+        raise ValueError('Go 1.25.5 VCS stamping requires a standalone .git directory checkout')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
@@ -255,6 +262,7 @@ def main():
     manifest = json.loads(input_bytes)
     if (options.os, options.arch) not in dns.TARGETS:raise ValueError('only four desktop consumers allowed')
     source = options.source.resolve()
+    require_vcs_checkout(source)
     output = options.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     if output.is_relative_to(source):
@@ -422,12 +430,12 @@ def main():
         reject_case('missing-cronet-ABI-with-matching-byte-hash', version_args + ['--library', str(missing_abi), '--sha256', digest(missing_abi)])
     (output / 'cronet-native-negative-cases.json').write_text(json.dumps(negatives, indent=2) + '\n')
     regression_tags = tags if 'with_purego' in tags.split(',') else tags + ',with_purego'
-    tests = go_run(['go', 'test', '-mod=readonly', '-p', '1', '-parallel', '2', '-count=1', '-v', '-run',
+    tests = go_run(['go', 'test', '-trimpath', '-mod=readonly', '-p', '1', '-parallel', '2', '-count=1', '-v', '-run',
                  '^(TestStackCapabilitiesWithoutSystemTun|TestPolarisGVisorBuildEntrypoints|TestCronetDiagnosticRequiresExactLibraryBytes|TestCronetDiagnosticRejectsFIFOWithoutBlocking)$',
                  '-tags', regression_tags, '-ldflags', (source / 'release/LDFLAGS').read_text().strip(),
                  './protocol/tun', './cmd/internal/build_libbox', './cmd/sing-box'], source, env)
     (output / 'regressions.log').write_text(tests)
-    dns_tests = go_run(['go','test','-mod=readonly','-p','1','-parallel','2','-count=1','-v','-run','^TestWindows(DNS|Lifecycle)', 'github.com/sagernet/sing-tun'],source,env)
+    dns_tests = go_run(['go','test','-trimpath','-mod=readonly','-p','1','-parallel','2','-count=1','-v','-run','^TestWindows(DNS|Lifecycle)', 'github.com/sagernet/sing-tun'],source,env)
     (output/'windows-dns-mocks-native.log').write_text(dns_tests)
     build_info = go_run(['go','version','-m',binary],source,env)
     build_id = go_run(['go','tool','buildid',binary],source,env).strip()
