@@ -6,6 +6,13 @@ import subprocess
 
 SOURCE = 'aafc521b745e0d1a8f50a6a3f41169433f1c2194'
 TREE = '4ae424d8a99b16a02442d7b2eac1d5e24e938d8e'
+# Go 1.25.5 stamps root versions using available tags. Fixed-source shallow CI
+# has no semver ancestor tag; a full checkout has upstream alpha.11.
+ROOT_MODULE_VERSIONS = (
+    'v0.0.0-20261010200656-aafc521b745e',
+    'v1.15.0-alpha.11.0.20261010200656-aafc521b745e',
+)
+SOURCE_TIME = '2026-10-10T20:06:56Z'
 TARGETS = [('linux', 'amd64'), ('windows', 'amd64'), ('darwin', 'amd64'), ('darwin', 'arm64')]
 
 
@@ -77,15 +84,15 @@ def validate_build_info(text, manifest, platform, actual_build_id, actual_versio
             settings[key] = value
     binding = manifest['replacementBinding']
     expected_dep = (binding['module'], binding['version'])
-    if module != ('github.com/sagernet/sing-box', '(devel)') or dependency != expected_dep or replacements != [(expected_dep, binding['replacementPath'], '(devel)')]:
+    if module is None or module[0] != 'github.com/sagernet/sing-box' or module[1] not in ROOT_MODULE_VERSIONS or dependency != expected_dep or replacements != [(expected_dep, binding['replacementPath'], '(devel)')]:
         raise ValueError('actual binary root/module replacement identity differs')
-    expected = {'vcs.revision': SOURCE, 'vcs.modified': 'false', 'GOOS': platform['os'],
+    expected = {'vcs': 'git', 'vcs.time': SOURCE_TIME, 'vcs.revision': SOURCE, 'vcs.modified': 'false', 'GOOS': platform['os'],
                 'GOARCH': platform['arch'], 'CGO_ENABLED': platform['CGO_ENABLED'],
                 '-trimpath': 'true', '-buildmode': 'exe', '-compiler': 'gc'}
     if any(settings.get(key) != value for key, value in expected.items()) or sorted(settings.get('-tags', '').split(',')) != platform['tags']:
         raise ValueError('actual binary VCS/build parameters differ')
     if actual_build_id.strip() != platform['buildID'] or actual_version.splitlines()[0] != 'sing-box version ' + manifest['candidateVersion']:
         raise ValueError('actual binary BuildID/version differs')
-    return {'module': module[0], 'dependency': list(expected_dep),
+    return {'module': module[0], 'moduleVersion': module[1], 'dependency': list(expected_dep),
             'replacement': binding['replacementPath'], 'settings': settings,
             'buildInfoSha256': sha(text.encode()), 'validatedAgainstActualBinary': True}

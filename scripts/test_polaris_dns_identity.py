@@ -38,18 +38,20 @@ class DNSIdentityTests(unittest.TestCase):
 
     def sample(self,platform):
         b=self.manifest['replacementBinding']
-        return 'actual-core: go1.25.5\n\tpath\tgithub.com/sagernet/sing-box/cmd/sing-box\n\tmod\tgithub.com/sagernet/sing-box\t(devel)\t\n'+f'\tdep\t{b["module"]}\t{b["version"]}\n\t=>\t{b["replacementPath"]}\t(devel)\t\n'+''.join('\tbuild\t'+k+'='+v+'\n' for k,v in {'vcs.revision':dns.SOURCE,'vcs.modified':'false','GOOS':platform['os'],'GOARCH':platform['arch'],'CGO_ENABLED':platform['CGO_ENABLED'],'-tags':','.join(platform['tags']),'-trimpath':'true','-buildmode':'exe','-compiler':'gc'}.items())
+        return 'actual-core: go1.25.5\n\tpath\tgithub.com/sagernet/sing-box/cmd/sing-box\n\tmod\tgithub.com/sagernet/sing-box\t'+dns.ROOT_MODULE_VERSIONS[0]+'\t\n'+f'\tdep\t{b["module"]}\t{b["version"]}\n\t=>\t{b["replacementPath"]}\t(devel)\t\n'+''.join('\tbuild\t'+k+'='+v+'\n' for k,v in {'vcs':'git','vcs.time':dns.SOURCE_TIME,'vcs.revision':dns.SOURCE,'vcs.modified':'false','GOOS':platform['os'],'GOARCH':platform['arch'],'CGO_ENABLED':platform['CGO_ENABLED'],'-tags':','.join(platform['tags']),'-trimpath':'true','-buildmode':'exe','-compiler':'gc'}.items())
 
     def test_real_modinfo_shape_and_all_four_parameter_policies(self):
         for target in dns.TARGETS:
             p=dns.platform_identity(self.identity,self.manifest,*target,'with_gvisor,with_quic')
-            result=dns.validate_build_info(self.sample(p),self.manifest,p,p['buildID'],'sing-box version '+self.manifest['candidateVersion']+'\n')
-            self.assertTrue(result['validatedAgainstActualBinary'])
+            for root_version in dns.ROOT_MODULE_VERSIONS:
+                actual=self.sample(p).replace(dns.ROOT_MODULE_VERSIONS[0],root_version)
+                result=dns.validate_build_info(actual,self.manifest,p,p['buildID'],'sing-box version '+self.manifest['candidateVersion']+'\n')
+                self.assertTrue(result['validatedAgainstActualBinary'])
 
     def test_old_core_missing_wrong_extra_replace_and_parameter_drift_reject(self):
         p=dns.platform_identity(self.identity,self.manifest,'linux','amd64','with_gvisor,with_quic')
         text=self.sample(p);b=self.manifest['replacementBinding']
-        mutants=[text.replace(dns.SOURCE,'a01'),text.replace('go1.25.5','go1.27.1'),text.replace('vcs.modified=false','vcs.modified=true'),text.replace('GOOS=linux','GOOS=windows'),text.replace('CGO_ENABLED=0','CGO_ENABLED=1'),text.replace('with_gvisor,with_quic','with_quic'),text.replace(b['version'],'v0.9.6'),text.replace(b['replacementPath'],'./other'),text.replace('\t=>\t'+b['replacementPath']+'\t(devel)\t\n',''),text+'\tdep\tother\tv1.0.0\n\t=>\t./other\t(devel)\n',text+'\tbuild\tvcs.modified=false\n']
+        mutants=[text.replace(dns.ROOT_MODULE_VERSIONS[0],'(devel)'),text.replace('20261010200656','20261010200655'),text.replace(dns.SOURCE_TIME,'2026-10-10T20:06:55Z'),text.replace('vcs=git','vcs=hg'),text.replace(dns.SOURCE,'a01'),text.replace('go1.25.5','go1.27.1'),text.replace('vcs.modified=false','vcs.modified=true'),text.replace('GOOS=linux','GOOS=windows'),text.replace('CGO_ENABLED=0','CGO_ENABLED=1'),text.replace('with_gvisor,with_quic','with_quic'),text.replace(b['version'],'v0.9.6'),text.replace(b['replacementPath'],'./other'),text.replace('\t=>\t'+b['replacementPath']+'\t(devel)\t\n',''),text+'\tdep\tother\tv1.0.0\n\t=>\t./other\t(devel)\n',text+'\tbuild\tvcs.modified=false\n']
         for index,t in enumerate(mutants):
             with self.subTest(index=index),self.assertRaises(ValueError):dns.validate_build_info(t,self.manifest,p,p['buildID'],'sing-box version '+self.manifest['candidateVersion'])
         for buildid,version in [('old',self.manifest['candidateVersion']),(p['buildID'],'old')]:

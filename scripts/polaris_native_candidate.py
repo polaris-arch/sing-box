@@ -440,10 +440,10 @@ def main():
     build_info = go_run(['go','version','-m',binary],source,env)
     build_id = go_run(['go','tool','buildid',binary],source,env).strip()
     version_output = run([binary,'version'],source,diagnostics_env)
-    binary_identity = dns.validate_build_info(build_info,manifest,platform_identity,build_id,version_output)
     (output/'actual-buildinfo.txt').write_text(build_info)
     (output/'actual-buildid.txt').write_text(build_id+'\n')
     (output/'actual-core-version.txt').write_text(version_output)
+    binary_identity = dns.validate_build_info(build_info,manifest,platform_identity,build_id,version_output)
     licenses = root / 'licenses'
     licenses.mkdir()
     for file, expected in manifest['licenseFiles'].items():

@@ -61,3 +61,5 @@ are separate unverified boundaries. Whole-batch source review precedes the one
 necessary native CI dispatch. No tags/releases/main/device writes occur here.
 
 Pinned Go 1.25.5 requires a standalone source checkout with a real `.git` directory for VCS stamping. The producer rejects worktree gitfiles before downloading or building; the final binary must still carry the exact source SHA and `vcs.modified=false`.
+
+Go 1.25.5 also stamps the root module pseudo-version from available Git tags. Only `v0.0.0-20261010200656-aafc521b745e` (untagged shallow CI) and `v1.15.0-alpha.11.0.20261010200656-aafc521b745e` (upstream alpha.11 ancestor present) are accepted. Both require actual `vcs=git`, full `aafc` revision, commit time `2026-10-10T20:06:56Z` and clean state. Observed root versions remain evidence; they do not replace the stable common source identity or application version.
