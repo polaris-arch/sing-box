@@ -1,0 +1,2 @@
+third_party/sing-tun/** -text
+release/dependency-sources/*.patch whitespace=-space-before-tab
