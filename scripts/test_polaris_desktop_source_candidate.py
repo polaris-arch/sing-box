@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 import json
 import pathlib
 import subprocess
@@ -6,6 +7,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 SCRIPT = pathlib.Path(__file__).with_name('polaris_desktop_source_candidate.py')
@@ -88,6 +90,44 @@ class SourceAssemblyTests(unittest.TestCase):
         self.assertEqual((self.stage / 'DESKTOP-SOURCE-NOTICE-SUPERSET.txt').read_bytes(), b'NOTICE\r\n')
         self.assertNotEqual(self.run_helper('--output-dir', str(output)).returncode, 0)
         self.assertEqual(self.sha(bundle), receipt['sha256'])
+
+    def run_with_post_preflight_rewrite(self, target, replacement, expected_error):
+        spec = importlib.util.spec_from_file_location('packager_under_test', SCRIPT)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        original_hash = helper.file_hash
+        original_bytes = target.read_bytes()
+        self.assertEqual(len(original_bytes), len(replacement))
+        rewritten = False
+
+        def injected_hash(path):
+            nonlocal rewritten
+            result = original_hash(path)
+            if pathlib.Path(path) == self.go and not rewritten:
+                # Go input is checked after source inputs, immediately before assembly.
+                target.write_bytes(replacement)
+                rewritten = True
+            return result
+
+        output = self.root / 'post-preflight-output'
+        with mock.patch.object(helper, 'file_hash', injected_hash), mock.patch.object(
+                sys, 'argv', self.command[1:] + ['--output-dir', str(output)]):
+            with self.assertRaisesRegex(ValueError, expected_error):
+                helper.main()
+        self.assertTrue(rewritten)
+        self.assertFalse((output / 'bounded-source-package-receipt-v3.json').exists())
+        self.assertFalse((output / 'polaris-box-a01-desktop-source-candidate-three-platforms-v3.tar.gz').exists())
+        target.write_bytes(original_bytes)
+
+    def test_same_length_rewrite_after_preflight_rejects_unapproved_member(self):
+        self.run_with_post_preflight_rewrite(
+            self.cache / 'example/@v/v1.zip', b'wrong module',
+            'packaged member differs from frozen expected SHA256')
+
+    def test_toolchain_rewrite_after_preflight_cannot_change_derived_source(self):
+        self.run_with_post_preflight_rewrite(
+            self.go, b'x' * self.go.stat().st_size,
+            'verified Go toolchain snapshot SHA256 mismatch')
 
     def test_notice_corruption_rejected_even_with_python_optimization(self):
         (self.stage / 'DESKTOP-SOURCE-NOTICE-SUPERSET.txt').write_bytes(b'NOTICE!\n')
