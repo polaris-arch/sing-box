@@ -49,6 +49,32 @@ def verify_required_exports(required, exported):
         raise ValueError('Cronet required C exports missing: ' + ', '.join(sorted(missing)))
 
 
+
+CRONET_REJECTION_PATTERNS = {
+    'missing-library-argument': ('required-library', r'^Error: --library is required;'),
+    'missing-path': ('missing-library-path', r'^Error: (?:lstat|stat|readlink|CreateFile|GetFileAttributes(?:Ex)?) .*absent-library:'),
+    'wrong-digest': ('library-digest-mismatch', r'^Error: Cronet library SHA-256 mismatch:'),
+    'same-size-changed-bytes': ('library-digest-mismatch', r'^Error: Cronet library SHA-256 mismatch:'),
+    'wrong-version': ('engine-version-mismatch', r'^Error: Cronet version mismatch:'),
+    'wrong-machine-with-matching-byte-hash': ('native-library-load-failure', r'^Error: cronet: failed to load library '),
+    'missing-cronet-ABI-with-matching-byte-hash': ('required-ABI-symbol-missing', r'^Error: cronet: symbol Cronet_[A-Za-z0-9_]+ not found:'),
+    'static-rejects-sidecar': ('static-sidecar-rejected', r'^Error: this build links Cronet statically;'),
+}
+
+
+def validate_cronet_rejection(name, trial):
+    category, pattern = CRONET_REJECTION_PATTERNS[name]
+    # mainCommand.Execute returns an ordinary error through log.Fatal (exit 1).
+    # Signals, Windows crash status, Go panic, and unrelated errors cannot pass.
+    if (trial.returncode != 1 or trial.stdout or
+            re.search(r'(?im)^(?:panic:|fatal error:|SIG[A-Z]+:)', trial.stderr) or
+            not re.search(pattern, trial.stderr)):
+        raise ValueError(f'negative Cronet case did not produce {category}: {name}; '
+                         f'exit {trial.returncode}; stdout={trial.stdout!r}; stderr={trial.stderr!r}')
+    return {'case': name, 'expectedErrorCategory': category, 'errorCategoryMatched': True,
+            'exitCode': trial.returncode, 'stdout': trial.stdout, 'stderr': trial.stderr}
+
+
 def pe_metadata(data):
     if data[:2] != b'MZ':
         raise ValueError('not PE')
@@ -294,10 +320,7 @@ def main():
     def reject_case(name, arguments):
         trial = subprocess.run([str(binary), 'tools', 'cronet'] + arguments, cwd=source,
                                env=diagnostics_env, capture_output=True, text=True, timeout=20)
-        if trial.returncode == 0:
-            raise ValueError('negative Cronet case unexpectedly passed: ' + name)
-        negatives.append({'case': name, 'exitCode': trial.returncode,
-                          'stdout': trial.stdout, 'stderr': trial.stderr})
+        negatives.append(validate_cronet_rejection(name, trial))
     if host_os == 'darwin':
         reject_case('wrong-version', ['--expected-version', '0'])
         reject_case('static-rejects-sidecar', ['--expected-version', manifest['cronetVersion'], '--library', str(raw)])

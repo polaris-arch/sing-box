@@ -2,9 +2,10 @@ import io
 from pathlib import Path
 import tarfile
 import tempfile
+import subprocess
 import unittest
 import zipfile
-from polaris_native_candidate import archive_members, package, required_cronet_symbols, verify_required_exports
+from polaris_native_candidate import archive_members, package, required_cronet_symbols, verify_required_exports, validate_cronet_rejection
 
 
 class CandidateArchiveTests(unittest.TestCase):
@@ -74,6 +75,38 @@ class CronetRequiredExportsTests(unittest.TestCase):
                     for missing in floats:
                         with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, missing):
                             verify_required_exports(required, required - {missing})
+
+
+
+class CronetNegativeCategoryTests(unittest.TestCase):
+    def test_expected_ordinary_errors_are_classified(self):
+        cases = {
+            'missing-library-argument': '--library is required; no fallback',
+            'missing-path': 'lstat /tmp/absent-library: no such file or directory',
+            'wrong-digest': 'Cronet library SHA-256 mismatch: got one, want two',
+            'same-size-changed-bytes': 'Cronet library SHA-256 mismatch: got one, want two',
+            'wrong-version': 'Cronet version mismatch: got one, want two',
+            'wrong-machine-with-matching-byte-hash': 'cronet: failed to load library /tmp/foreign: bad machine',
+            'missing-cronet-ABI-with-matching-byte-hash': 'cronet: symbol Cronet_Buffer_Create not found: absent',
+            'static-rejects-sidecar': 'this build links Cronet statically; --library/--sha256 do not apply',
+        }
+        for name, message in cases.items():
+            with self.subTest(name=name):
+                trial = subprocess.CompletedProcess([], 1, '', 'Error: ' + message + '\nUsage:\n')
+                receipt = validate_cronet_rejection(name, trial)
+                self.assertTrue(receipt['errorCategoryMatched'])
+        windows_path = subprocess.CompletedProcess([], 1, '', 'Error: CreateFile C:\\tmp\\absent-library: The system cannot find the file specified.\n')
+        self.assertTrue(validate_cronet_rejection('missing-path', windows_path)['errorCategoryMatched'])
+
+    def test_crashes_and_unrelated_nonzero_errors_never_pass(self):
+        expected = 'Error: Cronet version mismatch: got one, want two\n'
+        for code, stdout, stderr in [(0, '', expected), (-11, '', expected), (2, '', expected),
+                (3221225477, '', expected), (1, '', expected + 'panic: failure\n'),
+                (1, '', expected + 'fatal error: runtime crash\n'),
+                (1, '', 'Error: unrelated failure\n'), (1, '', ''),
+                (1, '{"version":"unexpected"}', expected)]:
+            with self.subTest(code=code, stderr=stderr), self.assertRaisesRegex(ValueError, 'engine-version-mismatch'):
+                validate_cronet_rejection('wrong-version', subprocess.CompletedProcess([], code, stdout, stderr))
 
 
 if __name__ == '__main__':
