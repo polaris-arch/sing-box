@@ -31,12 +31,20 @@ func verifyCronetLibraryFile(path, expected string) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	// Reject special files before Open: opening a FIFO can block without a writer.
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", "", fmt.Errorf("Cronet library must be a regular file")
+	}
 	file, err := os.Open(resolved)
 	if err != nil {
 		return "", "", err
 	}
 	defer file.Close()
-	info, err := file.Stat()
+	info, err = file.Stat()
 	if err != nil {
 		return "", "", err
 	}
